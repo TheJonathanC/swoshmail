@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Secure Email Backup",
-  description: "Upload and email files to your inbox securely",
+  title: "Swoshmail - Secure Backup",
+  description: "Upload and email files to your inbox securely using Swoshmail",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

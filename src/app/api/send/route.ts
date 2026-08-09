@@ -65,7 +65,7 @@ export async function POST(request: Request) {
     });
 
     const mailOptions = {
-      from: `"Email Backup Service" <${smtpUser}>`,
+      from: `"Swoshmail" <${smtpUser}>`,
       to: emailTo,
       subject: subject || defaultSubject,
       text: bodyText || `Attached are your backup files: ${fileNames}\nUploaded at: ${new Date().toLocaleString()}`,

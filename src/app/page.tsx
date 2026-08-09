@@ -55,7 +55,7 @@ export default function Home() {
 
       if (res.ok) {
         setIsAuthenticated(true);
-        addToast("success", "Access Granted", "Welcome to Secure Email Backup.");
+        addToast("success", "Access Granted", "Welcome to Swoshmail Console.");
       } else {
         const data = await res.json();
         setAuthError(data.error || "Invalid password");
@@ -197,8 +197,8 @@ export default function Home() {
               <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
             </svg>
           </div>
-          <h1 className="auth-title">Security Key Required</h1>
-          <p className="auth-subtitle">This page is protected. Enter your credentials to proceed.</p>
+          <h1 className="auth-title">Swoshmail Console</h1>
+          <p className="auth-subtitle">Enter password to unlock Swoshmail Console.</p>
         </div>
 
         <form onSubmit={handleLogin}>
@@ -272,11 +272,12 @@ export default function Home() {
       <header className="dashboard-header">
         <div className="dashboard-logo">
           <div className="logo-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: "rotate(-15deg)" }}>
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
             </svg>
           </div>
-          <span className="logo-text">Secure Email Backup</span>
+          <span className="logo-text">Swoshmail Console</span>
         </div>
         <button className="btn-secondary" onClick={handleLogout}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
