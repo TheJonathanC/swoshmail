@@ -17,10 +17,14 @@ export const metadata: Metadata = {
   description: "Upload and email files to your inbox securely using Swoshmail",
 };
 
+import { Providers } from "./providers";
+
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
-      <body>{children}</body>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }
