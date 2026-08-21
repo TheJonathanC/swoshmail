@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { getFileFromR2 } from "@/lib/r2";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function GET(request: Request) {
   try {
@@ -11,6 +12,12 @@ export async function GET(request: Request) {
       return new Response("Unauthorized", { status: 401 });
     }
     const userId = (session.user as any).id;
+
+    // Rate Limit: 60 file downloads per minute per user
+    const rl = checkRateLimit(`drive_download_${userId}`, 60, 60000);
+    if (!rl.success) {
+      return new Response("Rate limit exceeded. Too many downloads.", { status: 429 });
+    }
 
     const { searchParams } = new URL(request.url);
     const key = searchParams.get("key");

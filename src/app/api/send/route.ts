@@ -4,6 +4,7 @@ import { authOptions } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { uploadToR2, getFileFromR2 } from "@/lib/r2";
 import nodemailer from "nodemailer";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 const ONE_GB = 1024 * 1024 * 1024;
 
@@ -16,7 +17,16 @@ export async function POST(request: Request) {
     }
     const userId = (session.user as any).id;
 
-    // 2. Rate Limiting (Max 5 emails per minute per user)
+    // 2. Fast In-Memory Rate Limiting (Protects DB)
+    const rl = checkRateLimit(`mail_send_${userId}`, 5, 60000);
+    if (!rl.success) {
+      return NextResponse.json(
+        { error: "Rate limit exceeded. You can only send 5 emails per minute." },
+        { status: 429 }
+      );
+    }
+
+    // 2.5 DB-Backed Rate Limiting (Cross-Instance protection)
     const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString();
     const { count, error: countError } = await supabase
       .from("email_logs")

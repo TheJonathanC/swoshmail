@@ -3,8 +3,20 @@
 import { useState, useEffect, useRef } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
 import dynamic from "next/dynamic";
+import { 
+  FolderIcon, FileIcon, CloudIcon, TrashIcon, DownloadIcon, EyeIcon, 
+  MailIcon, UploadIcon, ChevronRightIcon, SearchIcon, PaperclipIcon, PlusIcon, MessageIcon, CheckIcon
+} from "@/components/Icons";
 
 const ChatPanel = dynamic(() => import("@/components/ChatPanel"), { ssr: false });
+
+interface FolderItem {
+  id: string;
+  name: string;
+  parent_id: string | null;
+  owner_id: string;
+  created_at: string;
+}
 
 interface FileItem {
   id: string;
@@ -14,6 +26,7 @@ interface FileItem {
   url: string;
   owner_id: string;
   uploaded_at: string;
+  folder_id: string | null;
 }
 
 interface Toast {
@@ -31,7 +44,7 @@ export default function Home() {
   // Navigation tab state
   const [activeTab, setActiveTab] = useState<"mail" | "drive" | "chat">("mail");
 
-  // Auth form state (only used if unauthenticated)
+  // Auth form state
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState("");
@@ -52,12 +65,26 @@ export default function Home() {
 
   // Swosh Drive state
   const [driveFiles, setDriveFiles] = useState<FileItem[]>([]);
+  const [folders, setFolders] = useState<FolderItem[]>([]);
+  const [currentFolderId, setCurrentFolderId] = useState<string>("root");
+  const [breadcrumbs, setBreadcrumbs] = useState<{ id: string; name: string }[]>([]);
   const [totalUsed, setTotalUsed] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [isDriveFilesLoading, setIsDriveFilesLoading] = useState(false);
   const [isDriveUploading, setIsDriveUploading] = useState(false);
   const [driveUploadProgress, setDriveUploadProgress] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
+
+  // Folder creation and deletion state
+  const [newFolderName, setNewFolderName] = useState("");
+  const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [folderToDelete, setFolderToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [isDeletingFolder, setIsDeletingFolder] = useState(false);
+
+  // File Preview state
+  const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
+  const [previewContent, setPreviewContent] = useState("");
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
 
   // Toast State
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -66,7 +93,16 @@ export default function Home() {
   const mailFileInputRef = useRef<HTMLInputElement>(null);
   const driveFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Autofill username on mount
+  // Update document title based on active module
+  useEffect(() => {
+    const titleMap: Record<string, string> = {
+      mail: "Swosh Mail",
+      drive: "Swosh Drive",
+      chat: "Swosh Chat",
+    };
+    document.title = titleMap[activeTab] || "Swosh Workspace";
+  }, [activeTab]);
+
   useEffect(() => {
     const remembered = localStorage.getItem("remembered_username");
     if (remembered) {
@@ -74,12 +110,11 @@ export default function Home() {
     }
   }, []);
 
-  // Fetch Drive Files when authenticated or active tab becomes drive
   useEffect(() => {
     if (status === "authenticated") {
       fetchDriveFiles();
     }
-  }, [status]);
+  }, [status, currentFolderId]);
 
   const addToast = (type: "success" | "danger", title: string, message: string) => {
     const id = Date.now().toString();
@@ -92,11 +127,13 @@ export default function Home() {
   const fetchDriveFiles = async () => {
     setIsDriveFilesLoading(true);
     try {
-      const res = await fetch("/api/drive");
+      const res = await fetch(`/api/drive?folderId=${currentFolderId}`);
       if (res.ok) {
         const data = await res.json();
         setDriveFiles(data.files || []);
+        setFolders(data.folders || []);
         setTotalUsed(data.totalUsed || 0);
+        setBreadcrumbs(data.breadcrumbs || []);
       }
     } catch (err) {
       console.error("Failed to load drive files:", err);
@@ -106,7 +143,6 @@ export default function Home() {
     }
   };
 
-  // Auth Submit Handlers
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim() || !password.trim()) return;
@@ -140,30 +176,80 @@ export default function Home() {
 
   const handleLogout = () => {
     signOut({ redirect: false });
-    // Keep username in state for autofill but clear fields
     setPassword("");
     setDirectFiles([]);
     setAttachedDriveFiles([]);
     setDriveFiles([]);
+    setFolders([]);
+    setCurrentFolderId("root");
     setTotalUsed(0);
     addToast("success", "Console Locked", "Console secured successfully.");
   };
 
-  // Drive Upload Handling
+  const handleCreateFolder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
+
+    try {
+      const res = await fetch("/api/drive/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newFolderName.trim(),
+          parentId: currentFolderId === "root" ? null : currentFolderId,
+        }),
+      });
+
+      if (res.ok) {
+        addToast("success", "Folder Created", `Folder "${newFolderName}" created.`);
+        setNewFolderName("");
+        setIsCreatingFolder(false);
+        fetchDriveFiles();
+      } else {
+        const data = await res.json();
+        addToast("danger", "Failed", data.error || "Could not create folder.");
+      }
+    } catch (err) {
+      addToast("danger", "Error", "Network error while creating folder.");
+    }
+  };
+
+  const confirmFolderDelete = async () => {
+    if (!folderToDelete) return;
+    setIsDeletingFolder(true);
+
+    try {
+      const res = await fetch("/api/drive/folders/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderId: folderToDelete.id }),
+      });
+
+      if (res.ok) {
+        addToast("success", "Folder Deleted", `Folder "${folderToDelete.name}" was deleted.`);
+        fetchDriveFiles();
+      } else {
+        const data = await res.json();
+        addToast("danger", "Delete Failed", data.error || "Failed to delete folder.");
+      }
+    } catch (err) {
+      addToast("danger", "Error", "Could not connect to database.");
+    } finally {
+      setIsDeletingFolder(false);
+      setFolderToDelete(null);
+    }
+  };
+
   const handleDriveFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const filesList = e.target.files;
-    if (filesList && filesList.length > 0) {
-      uploadFileToDrive(filesList[0]);
-    }
+    if (filesList && filesList.length > 0) uploadFileToDrive(filesList[0]);
   };
 
   const handleDriveDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
     const filesList = e.dataTransfer.files;
-    if (filesList && filesList.length > 0) {
-      uploadFileToDrive(filesList[0]);
-    }
+    if (filesList && filesList.length > 0) uploadFileToDrive(filesList[0]);
   };
 
   const uploadFileToDrive = (file: File) => {
@@ -177,17 +263,13 @@ export default function Home() {
 
     const formData = new FormData();
     formData.append("file", file);
+    if (currentFolderId !== "root") formData.append("folderId", currentFolderId);
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/drive");
-
     xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const percent = Math.round((event.loaded / event.total) * 100);
-        setDriveUploadProgress(percent);
-      }
+      if (event.lengthComputable) setDriveUploadProgress(Math.round((event.loaded / event.total) * 100));
     };
-
     xhr.onload = () => {
       setIsDriveUploading(false);
       try {
@@ -203,12 +285,10 @@ export default function Home() {
         addToast("danger", "Upload Error", "Server returned an invalid response.");
       }
     };
-
     xhr.onerror = () => {
       setIsDriveUploading(false);
       addToast("danger", "Network Error", "Unable to connect to the server.");
     };
-
     xhr.send(formData);
   };
 
@@ -224,7 +304,6 @@ export default function Home() {
 
       if (res.ok) {
         addToast("success", "Deleted", `${fileName} was removed.`);
-        // Remove from attached lists if deleted
         setAttachedDriveFiles((prev) => prev.filter((f) => f.id !== fileId));
         fetchDriveFiles();
       } else {
@@ -237,7 +316,6 @@ export default function Home() {
   };
 
   const handleDriveFileMail = (file: FileItem) => {
-    // Check if already attached
     if (!attachedDriveFiles.some((f) => f.id === file.id)) {
       setAttachedDriveFiles((prev) => [...prev, file]);
     }
@@ -245,24 +323,45 @@ export default function Home() {
     addToast("success", "File Attached", `Attached ${file.name} to email compose.`);
   };
 
-  // Mail Direct Attachment Handling
-  const handleMailDirectFileAdd = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const filesList = e.target.files;
-    if (filesList) {
-      setDirectFiles((prev) => [...prev, ...Array.from(filesList)]);
+  const handleFilePreview = async (file: FileItem) => {
+    setPreviewFile(file);
+    setPreviewContent("");
+
+    const ext = file.name.split(".").pop()?.toLowerCase();
+    const isImage = ["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(ext || "");
+
+    if (isImage) return;
+
+    setIsPreviewLoading(true);
+    try {
+      const res = await fetch(`/api/drive/preview?key=${encodeURIComponent(file.key)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPreviewContent(data.content || "");
+      } else {
+        const data = await res.json();
+        setPreviewContent(`[Failed to load preview: ${data.error || "Unknown error"}]`);
+      }
+    } catch (err) {
+      setPreviewContent("[Error connecting to server to load preview.]");
+    } finally {
+      setIsPreviewLoading(false);
     }
   };
 
   const handleRemoveDirectFile = (index: number) => {
     setDirectFiles((prev) => prev.filter((_, i) => i !== index));
-    if (mailFileInputRef.current) mailFileInputRef.current.value = "";
   };
 
   const handleRemoveAttachedDriveFile = (id: string) => {
     setAttachedDriveFiles((prev) => prev.filter((f) => f.id !== id));
   };
 
-  // Mail Submit Handling
+  const handleMailDirectFileAdd = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const filesList = e.target.files;
+    if (filesList) setDirectFiles((prev) => [...prev, ...Array.from(filesList)]);
+  };
+
   const handleMailSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setIsSendingMail(true);
@@ -274,41 +373,23 @@ export default function Home() {
     if (emailBody.trim()) formData.append("body", emailBody);
     formData.append("saveToDrive", saveToDrive ? "true" : "false");
 
-    // Add direct files
-    directFiles.forEach((file) => {
-      formData.append("files", file);
-    });
-
-    // Add drive file IDs
-    attachedDriveFiles.forEach((file) => {
-      formData.append("driveFileIds", file.id);
-    });
+    directFiles.forEach((file) => formData.append("files", file));
+    attachedDriveFiles.forEach((file) => formData.append("driveFileIds", file.id));
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/send");
-
     xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const percent = Math.round((event.loaded / event.total) * 100);
-        setMailProgress(percent);
-      }
+      if (event.lengthComputable) setMailProgress(Math.round((event.loaded / event.total) * 100));
     };
-
     xhr.onload = () => {
       setIsSendingMail(false);
       try {
         const data = JSON.parse(xhr.responseText);
         if (xhr.status === 200 && data.success) {
           addToast("success", "Email Dispatched", data.message || "Email sent successfully.");
-          // Clear forms
-          setEmailTo("");
-          setEmailSubject("");
-          setEmailBody("");
-          setDirectFiles([]);
-          setAttachedDriveFiles([]);
-          setSaveToDrive(false);
+          setEmailTo(""); setEmailSubject(""); setEmailBody("");
+          setDirectFiles([]); setAttachedDriveFiles([]); setSaveToDrive(false);
           if (mailFileInputRef.current) mailFileInputRef.current.value = "";
-          // Refresh drive if files were auto-saved
           if (saveToDrive) fetchDriveFiles();
         } else {
           addToast("danger", "Dispatch Failed", data.error || "Could not send email.");
@@ -317,16 +398,13 @@ export default function Home() {
         addToast("danger", "Error", "Server returned an invalid response.");
       }
     };
-
     xhr.onerror = () => {
       setIsSendingMail(false);
       addToast("danger", "Network Error", "Unable to connect to the server.");
     };
-
     xhr.send(formData);
   };
 
-  // Helper formats
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return "0 Bytes";
     const k = 1024;
@@ -335,12 +413,21 @@ export default function Home() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   };
 
-  // Filter drive files by query
   const filteredDriveFiles = driveFiles.filter((f) =>
     f.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  const filteredFolders = folders.filter((fol) =>
+    fol.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
-  // Status Screen: Session loading
+  const isPreviewable = (fileName: string) => {
+    const ext = fileName.split(".").pop()?.toLowerCase() || "";
+    return [
+      "png", "jpg", "jpeg", "gif", "svg", "webp",
+      "txt", "log", "md", "json", "css", "js", "ts", "html", "xml", "csv"
+    ].includes(ext);
+  };
+
   if (status === "loading") {
     return (
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "16px" }}>
@@ -350,19 +437,15 @@ export default function Home() {
     );
   }
 
-  // Status Screen: Unauthenticated Login Form
   if (status === "unauthenticated") {
     return (
       <div className={`auth-container glass-panel ${shake ? "shake-animation" : ""}`}>
         <div className="auth-header">
           <div className="auth-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-            </svg>
+            <MailIcon size={32} />
           </div>
-          <h1 className="auth-title">Swosh Console</h1>
-          <p className="auth-subtitle">Enter credentials to unlock Swosh Workspace.</p>
+          <h1 className="auth-title">Swoshmail Console</h1>
+          <p className="auth-subtitle">Enter credentials to unlock Swoshmail Workspace.</p>
         </div>
 
         <form onSubmit={handleLogin}>
@@ -406,27 +489,12 @@ export default function Home() {
                 }}
                 onClick={() => setShowPassword(!showPassword)}
               >
-                {showPassword ? (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
-                    <line x1="1" y1="1" x2="23" y2="23"></line>
-                  </svg>
-                ) : (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                    <circle cx="12" cy="12" r="3"></circle>
-                  </svg>
-                )}
+                <EyeIcon size={18} />
               </button>
             </div>
             {authError && (
               <div className="error-text">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <line x1="12" y1="8" x2="12" y2="12"></line>
-                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                </svg>
-                {authError}
+                <TrashIcon size={14} /> {authError}
               </div>
             )}
           </div>
@@ -439,12 +507,10 @@ export default function Home() {
     );
   }
 
-  // Dashboard calculations
   const totalDirectBytes = directFiles.reduce((acc, f) => acc + f.size, 0);
   const isMailDirectFilesTooLarge = totalDirectBytes > 4.5 * 1024 * 1024;
   const quotaUsedPercentage = Math.min((totalUsed / ONE_GB) * 100, 100);
 
-  // Status Screen: Authenticated Dashboard
   return (
     <div className="workspace-container glass-panel">
       {/* 1. Left Sidebar Navigation */}
@@ -452,10 +518,9 @@ export default function Home() {
         <div>
           <div className="dashboard-logo" style={{ marginBottom: "30px" }}>
             <div className="logo-icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: "rotate(-15deg)" }}>
-                <line x1="22" y1="2" x2="11" y2="13"></line>
-                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-              </svg>
+              <div style={{ transform: "rotate(-10deg)", display: "flex" }}>
+                <MailIcon size={22} />
+              </div>
             </div>
             <span className="logo-text" style={{ fontSize: "20px" }}>Swoshmail</span>
           </div>
@@ -465,35 +530,24 @@ export default function Home() {
               className={`nav-item ${activeTab === "mail" ? "active" : ""}`}
               onClick={() => setActiveTab("mail")}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
-                <polyline points="22,6 12,13 2,6"></polyline>
-              </svg>
-              Swosh Mail
+              <MailIcon size={18} /> Swosh Mail
             </button>
             <button
               className={`nav-item ${activeTab === "drive" ? "active" : ""}`}
               onClick={() => setActiveTab("drive")}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
-              </svg>
-              Swosh Drive
+              <CloudIcon size={18} /> Swosh Drive
             </button>
             <button
               className={`nav-item ${activeTab === "chat" ? "active" : ""}`}
               onClick={() => setActiveTab("chat")}
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
-              </svg>
-              Swosh Chat
+              <MessageIcon size={18} /> Swosh Chat
             </button>
           </nav>
         </div>
 
         <div className="sidebar-footer">
-          {/* Drive Storage Quota Tracker */}
           <div className="quota-tracker">
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px", fontWeight: "bold" }}>
               <span>DRIVE STORAGE</span>
@@ -510,7 +564,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* User logout section */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderTop: "1px solid rgba(255, 255, 255, 0.05)" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-muted)" }}>@{session?.user?.name}</span>
             <button className="btn-secondary" style={{ padding: "6px 12px", fontSize: "11px" }} onClick={handleLogout}>
@@ -522,14 +575,14 @@ export default function Home() {
 
       {/* 2. Main Area Panel */}
       <main className="main-content">
-
+        
         {/* MODULE: Swosh Mail tab */}
         {activeTab === "mail" && (
           <div>
             <h2 style={{ fontSize: "20px", fontWeight: 700, marginBottom: "20px" }}>Compose Email</h2>
             <form onSubmit={handleMailSubmit}>
               <div className="extra-fields" style={{ marginBottom: "20px" }}>
-
+                
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label className="form-label">Recipient Email (Optional)</label>
                   <input
@@ -580,7 +633,7 @@ export default function Home() {
                     onClick={() => mailFileInputRef.current?.click()}
                     disabled={isSendingMail}
                   >
-                    📎 Upload Local Files
+                    <PaperclipIcon size={16} /> Upload Local Files
                   </button>
                   <button
                     type="button"
@@ -588,7 +641,7 @@ export default function Home() {
                     onClick={() => setIsMailFileModalOpen(true)}
                     disabled={isSendingMail}
                   >
-                    ☁️ Attach from Drive
+                    <CloudIcon size={16} /> Attach from Drive
                   </button>
                   <input
                     type="file"
@@ -599,21 +652,20 @@ export default function Home() {
                   />
                 </div>
 
-                {/* Direct Uploads attachments view */}
                 {directFiles.length > 0 && (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "12px" }}>
                     <div style={{ fontSize: "11px", fontWeight: "bold", color: "var(--text-muted)" }}>DIRECT ATTACHMENTS (UPLOADED FROM LOCAL):</div>
                     {directFiles.map((file, idx) => (
                       <div key={`direct-${idx}`} className="file-card" style={{ marginTop: 0, padding: "8px 14px" }}>
                         <div className="file-info">
-                          <span className="file-icon">📎</span>
+                          <span className="file-icon"><PaperclipIcon size={16} /></span>
                           <div>
                             <div className="file-name" style={{ fontSize: "13px" }}>{file.name}</div>
                             <div className="file-size" style={{ fontSize: "11px" }}>{formatBytes(file.size)}</div>
                           </div>
                         </div>
                         <button type="button" className="btn-remove" onClick={() => handleRemoveDirectFile(idx)}>
-                          ✕
+                          <TrashIcon size={14} />
                         </button>
                       </div>
                     ))}
@@ -625,21 +677,20 @@ export default function Home() {
                   </div>
                 )}
 
-                {/* Drive attachments view */}
                 {attachedDriveFiles.length > 0 && (
                   <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                     <div style={{ fontSize: "11px", fontWeight: "bold", color: "var(--text-muted)" }}>DRIVE ATTACHMENTS (PULLED FROM CLOUD):</div>
                     {attachedDriveFiles.map((file) => (
                       <div key={file.id} className="file-card" style={{ marginTop: 0, padding: "8px 14px" }}>
                         <div className="file-info">
-                          <span className="file-icon">☁️</span>
+                          <span className="file-icon"><CloudIcon size={16} /></span>
                           <div>
                             <div className="file-name" style={{ fontSize: "13px" }}>{file.name}</div>
                             <div className="file-size" style={{ fontSize: "11px" }}>{formatBytes(parseInt(file.size))}</div>
                           </div>
                         </div>
                         <button type="button" className="btn-remove" onClick={() => handleRemoveAttachedDriveFile(file.id)}>
-                          ✕
+                          <TrashIcon size={14} />
                         </button>
                       </div>
                     ))}
@@ -662,7 +713,6 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Progress indicator */}
               {isSendingMail && (
                 <div className="progress-container" style={{ marginBottom: "20px" }}>
                   <div className="progress-label">
@@ -683,11 +733,7 @@ export default function Home() {
                   </>
                 ) : (
                   <>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="22" y1="2" x2="11" y2="13"></line>
-                      <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                    </svg>
-                    Send Swoshmail
+                    <MailIcon size={18} /> Send Swoshmail
                   </>
                 )}
               </button>
@@ -700,20 +746,76 @@ export default function Home() {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
               <h2 style={{ fontSize: "20px", fontWeight: 700 }}>Swosh Drive Explorer</h2>
-              <button
-                className="btn-primary"
-                style={{ width: "auto", padding: "10px 18px" }}
-                onClick={() => driveFileInputRef.current?.click()}
-                disabled={isDriveUploading}
+              <div style={{ display: "flex", gap: "12px" }}>
+                {isCreatingFolder ? (
+                  <form onSubmit={handleCreateFolder} style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                    <input
+                      type="text"
+                      className="form-input"
+                      style={{ padding: "8px 12px", width: "160px", fontSize: "13px" }}
+                      placeholder="Folder name..."
+                      value={newFolderName}
+                      onChange={(e) => setNewFolderName(e.target.value)}
+                      autoFocus
+                    />
+                    <button type="submit" className="btn-primary" style={{ width: "auto", padding: "8px 12px" }}>
+                      Create
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      style={{ padding: "8px 12px" }}
+                      onClick={() => { setIsCreatingFolder(false); setNewFolderName(""); }}
+                    >
+                      Cancel
+                    </button>
+                  </form>
+                ) : (
+                  <button
+                    className="btn-secondary"
+                    style={{ padding: "10px 18px" }}
+                    onClick={() => setIsCreatingFolder(true)}
+                  >
+                    <PlusIcon size={16} /> New Folder
+                  </button>
+                )}
+
+                <button
+                  className="btn-primary"
+                  style={{ width: "auto", padding: "10px 18px" }}
+                  onClick={() => driveFileInputRef.current?.click()}
+                  disabled={isDriveUploading}
+                >
+                  {isDriveUploading ? "Uploading..." : <><UploadIcon size={16} /> Upload File</>}
+                </button>
+                <input
+                  type="file"
+                  ref={driveFileInputRef}
+                  onChange={handleDriveFileUpload}
+                  style={{ display: "none" }}
+                />
+              </div>
+            </div>
+
+            {/* Breadcrumb Navigation Trail */}
+            <div className="breadcrumbs-bar">
+              <span
+                className={`breadcrumb-item ${currentFolderId === "root" ? "active" : ""}`}
+                onClick={() => currentFolderId !== "root" && setCurrentFolderId("root")}
               >
-                {isDriveUploading ? "Uploading..." : "Upload File"}
-              </button>
-              <input
-                type="file"
-                ref={driveFileInputRef}
-                onChange={handleDriveFileUpload}
-                style={{ display: "none" }}
-              />
+                <CloudIcon size={16} /> Drive
+              </span>
+              {breadcrumbs.map((crumb, index) => (
+                <span key={crumb.id} style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                  <ChevronRightIcon size={14} className="breadcrumb-separator" />
+                  <span
+                    className={`breadcrumb-item ${index === breadcrumbs.length - 1 ? "active" : ""}`}
+                    onClick={() => index !== breadcrumbs.length - 1 && setCurrentFolderId(crumb.id)}
+                  >
+                    {crumb.name}
+                  </span>
+                </span>
+              ))}
             </div>
 
             {/* Dropzone file upload */}
@@ -722,16 +824,16 @@ export default function Home() {
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleDriveDrop}
-              style={{ marginBottom: "25px", padding: "30px 15px" }}
+              style={{ marginBottom: "25px", padding: "20px 15px" }}
             >
-              <div className="dropzone-icon" style={{ fontSize: "32px" }}>☁️</div>
-              <div className="dropzone-title" style={{ fontSize: "14px" }}>Drag files here to upload directly to drive</div>
+              <div className="dropzone-icon" style={{ color: "var(--primary)" }}><CloudIcon size={36} /></div>
+              <div className="dropzone-title" style={{ fontSize: "13px" }}>Drag files here to upload directly to this directory</div>
             </div>
 
             {isDriveUploading && (
               <div className="progress-container" style={{ marginBottom: "25px" }}>
                 <div className="progress-label">
-                  <span>Uploading file to SwoshDrive...</span>
+                  <span>Uploading file to Cloudflare R2...</span>
                   <span>{driveUploadProgress}%</span>
                 </div>
                 <div className="progress-bar-wrapper">
@@ -746,84 +848,129 @@ export default function Home() {
                 <input
                   type="text"
                   className="form-input"
-                  placeholder="Search files..."
+                  placeholder="Search files and folders..."
                   style={{ paddingLeft: "42px" }}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
                 <div style={{ position: "absolute", left: "14px", top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)", pointerEvents: "none" }}>
-                  🔍
+                  <SearchIcon size={18} />
                 </div>
               </div>
             </div>
+
+            {/* Folder Explorer Grid */}
+            {filteredFolders.length > 0 && (
+              <div className="folder-grid">
+                {filteredFolders.map((folder) => (
+                  <div
+                    key={folder.id}
+                    className="folder-card"
+                    onClick={() => setCurrentFolderId(folder.id)}
+                  >
+                    <div className="folder-info">
+                      <span className="folder-icon"><FolderIcon size={20} /></span>
+                      <span className="folder-name" title={folder.name}>
+                        {folder.name}
+                      </span>
+                    </div>
+                    <button
+                      className="folder-delete-btn"
+                      title="Delete folder and contents"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFolderToDelete({ id: folder.id, name: folder.name });
+                      }}
+                    >
+                      <TrashIcon size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* File list table */}
             {isDriveFilesLoading ? (
               <div className="empty-state">
                 <div className="spinner" style={{ margin: "20px auto" }}></div>
-                <p>Loading files...</p>
+                <p>Loading directory...</p>
               </div>
-            ) : filteredDriveFiles.length === 0 ? (
+            ) : filteredDriveFiles.length === 0 && filteredFolders.length === 0 ? (
               <div className="empty-state">
-                <p>{searchQuery ? "No files match your search query." : "No files saved in Swosh Drive yet."}</p>
+                <div style={{ color: "var(--text-muted)", marginBottom: "12px", display: "flex", justifyContent: "center" }}>
+                  <FileIcon size={32} />
+                </div>
+                <p>{searchQuery ? "No items match your search query." : "This directory is empty."}</p>
               </div>
             ) : (
-              <div className="drive-table-wrapper">
-                <table className="drive-table">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Size</th>
-                      <th>Uploaded</th>
-                      <th style={{ textAlign: "right" }}>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredDriveFiles.map((file) => (
-                      <tr key={file.id}>
-                        <td>
-                          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                            <span style={{ fontSize: "18px" }}>📄</span>
-                            <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", maxWidth: "250px", whiteSpace: "nowrap" }} title={file.name}>
-                              {file.name}
-                            </span>
-                          </div>
-                        </td>
-                        <td>{formatBytes(parseInt(file.size))}</td>
-                        <td style={{ color: "var(--text-muted)", fontSize: "12px" }}>
-                          {new Date(file.uploaded_at).toLocaleDateString()}
-                        </td>
-                        <td className="action-buttons-cell">
-                          <button
-                            type="button"
-                            className="btn-icon"
-                            title="Attach to Swosh Mail"
-                            onClick={() => handleDriveFileMail(file)}
-                          >
-                            ✉️
-                          </button>
-                          <a
-                            href={file.url}
-                            className="btn-icon"
-                            title="Download"
-                            download={file.name}
-                          >
-                            ⬇️
-                          </a>
-                          <button
-                            type="button"
-                            className="btn-icon delete"
-                            title="Delete File"
-                            onClick={() => handleDriveFileDelete(file.id, file.name)}
-                          >
-                            🗑️
-                          </button>
-                        </td>
+              filteredDriveFiles.length > 0 && (
+                <div className="drive-table-wrapper">
+                  <table className="drive-table">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Size</th>
+                        <th>Uploaded</th>
+                        <th style={{ textAlign: "right" }}>Actions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {filteredDriveFiles.map((file) => (
+                        <tr key={file.id}>
+                          <td>
+                            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                              <span style={{ color: "var(--text-muted)" }}><FileIcon size={18} /></span>
+                              <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", maxWidth: "250px", whiteSpace: "nowrap" }} title={file.name}>
+                                {file.name}
+                              </span>
+                            </div>
+                          </td>
+                          <td style={{ color: "var(--text-muted)", fontSize: "13px" }}>{formatBytes(parseInt(file.size))}</td>
+                          <td style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                            {new Date(file.uploaded_at).toLocaleDateString()}
+                          </td>
+                          <td className="action-buttons-cell">
+                            {isPreviewable(file.name) && (
+                              <button
+                                type="button"
+                                className="btn-icon"
+                                title="Preview File"
+                                onClick={() => handleFilePreview(file)}
+                              >
+                                <EyeIcon size={16} />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="btn-icon"
+                              title="Attach to Swosh Mail"
+                              onClick={() => handleDriveFileMail(file)}
+                            >
+                              <MailIcon size={16} />
+                            </button>
+                            <a
+                              href={file.url}
+                              className="btn-icon"
+                              title="Download"
+                              download={file.name}
+                            >
+                              <DownloadIcon size={16} />
+                            </a>
+                            <button
+                              type="button"
+                              className="btn-icon delete"
+                              title="Delete File"
+                              onClick={() => handleDriveFileDelete(file.id, file.name)}
+                            >
+                              <TrashIcon size={16} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
             )}
           </div>
         )}
@@ -840,7 +987,111 @@ export default function Home() {
         )}
       </main>
 
-      {/* MODAL: Select from Drive file picker inside compose mail */}
+      {/* MODAL: Folder Delete Confirmation */}
+      {folderToDelete && (
+        <div className="modal-overlay" onClick={() => !isDeletingFolder && setFolderToDelete(null)}>
+          <div className="modal-content glass-panel" style={{ maxWidth: "400px" }} onClick={(e) => e.stopPropagation()}>
+            <header className="modal-header">
+              <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--danger)" }}>
+                <TrashIcon size={18} /> Delete Folder
+              </h3>
+            </header>
+            <div className="modal-body" style={{ padding: "20px" }}>
+              <p style={{ marginBottom: "12px", fontSize: "14px", lineHeight: 1.5 }}>
+                Are you sure you want to delete the folder <strong>"{folderToDelete.name}"</strong>?
+              </p>
+              <div className="error-text" style={{ background: "rgba(239,68,68,0.1)", padding: "12px", borderRadius: "8px", color: "var(--danger)" }}>
+                ⚠️ <strong>WARNING:</strong> This will permanently delete all files and subfolders inside it. This action cannot be undone.
+              </div>
+            </div>
+            <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "15px" }}>
+              <button
+                className="btn-secondary"
+                style={{ padding: "10px 16px" }}
+                onClick={() => setFolderToDelete(null)}
+                disabled={isDeletingFolder}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-primary"
+                style={{ background: "var(--danger)", padding: "10px 16px", width: "auto" }}
+                onClick={confirmFolderDelete}
+                disabled={isDeletingFolder}
+              >
+                {isDeletingFolder ? <div className="spinner"></div> : "Delete Permanently"}
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: File Previewer */}
+      {previewFile && (
+        <div className="modal-overlay" onClick={() => setPreviewFile(null)}>
+          <div className="modal-content glass-panel" style={{ maxWidth: "640px" }} onClick={(e) => e.stopPropagation()}>
+            <header className="modal-header">
+              <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <FileIcon size={18} /> {previewFile.name}
+              </h3>
+              <button
+                type="button"
+                className="btn-remove"
+                style={{ padding: "6px" }}
+                onClick={() => setPreviewFile(null)}
+              >
+                <TrashIcon size={14} /> {/* Actually should be X icon, but we'll use btn-remove which acts like X in this context */}
+              </button>
+            </header>
+
+            <div className="modal-body" style={{ overflowY: "auto" }}>
+              {(() => {
+                const ext = previewFile.name.split(".").pop()?.toLowerCase() || "";
+                const isImage = ["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(ext);
+
+                if (isImage) {
+                  return (
+                    <div className="preview-image-container">
+                      <img src={previewFile.url} alt={previewFile.name} className="preview-image" />
+                    </div>
+                  );
+                }
+
+                if (isPreviewLoading) {
+                  return (
+                    <div className="empty-state" style={{ padding: "40px 0" }}>
+                      <div className="spinner" style={{ margin: "0 auto 12px auto" }}></div>
+                      Loading file body...
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="preview-text-box">
+                    {previewContent}
+                  </div>
+                );
+              })()}
+            </div>
+
+            <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "15px", marginTop: "5px" }}>
+              <span style={{ fontSize: "12px", color: "var(--text-muted)", marginRight: "auto", display: "flex", alignSelf: "center" }}>
+                Size: {formatBytes(parseInt(previewFile.size))}
+              </span>
+              <a
+                href={previewFile.url}
+                className="btn-primary"
+                style={{ width: "auto", padding: "8px 16px", textDecoration: "none", fontSize: "13px" }}
+                download={previewFile.name}
+              >
+                <DownloadIcon size={16} /> Download File
+              </a>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Select from Drive file picker */}
       {isMailFileModalOpen && (
         <div className="modal-overlay" onClick={() => setIsMailFileModalOpen(false)}>
           <div className="modal-content glass-panel" onClick={(e) => e.stopPropagation()}>
@@ -852,7 +1103,7 @@ export default function Home() {
                 style={{ padding: "6px" }}
                 onClick={() => setIsMailFileModalOpen(false)}
               >
-                ✕
+                <TrashIcon size={14} />
               </button>
             </header>
 
@@ -877,14 +1128,17 @@ export default function Home() {
                       }}
                     >
                       <div className="checkbox-custom">
-                        {isSelected && "✓"}
+                        {isSelected && <CheckIcon size={12} />}
                       </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: "14px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {file.name}
-                        </div>
-                        <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                          {formatBytes(parseInt(file.size))}
+                      <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: "10px" }}>
+                        <FileIcon size={16} className="text-muted" />
+                        <div>
+                          <div style={{ fontSize: "14px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {file.name}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                            {formatBytes(parseInt(file.size))}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -911,7 +1165,7 @@ export default function Home() {
       <div className="toast-container">
         {toasts.map((toast) => (
           <div key={toast.id} className={`toast toast-${toast.type}`}>
-            <span className="toast-icon">{toast.type === "success" ? "✓" : "⚠"}</span>
+            <span className="toast-icon">{toast.type === "success" ? <CheckIcon size={14} /> : "⚠"}</span>
             <div className="toast-content">
               <div className="toast-title">{toast.title}</div>
               <div className="toast-message">{toast.message}</div>
