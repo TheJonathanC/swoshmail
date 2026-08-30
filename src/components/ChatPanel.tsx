@@ -184,7 +184,7 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
     subscribeToConversation(conv);
 
     // Always fetch messages (API handles Snapchat deletion logic)
-    const res = await fetch(`/api/chat/messages?conversationId=${conv.id}`);
+    const res = await fetch(`/api/chat/messages?conversationId=${conv.id}`, { cache: "no-store" });
     if (res.ok) {
       const data = await res.json();
       setMessages(data.messages || []);

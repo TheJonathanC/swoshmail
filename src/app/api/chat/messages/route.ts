@@ -4,6 +4,8 @@ import { authOptions } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { checkRateLimit } from "@/lib/rate-limit";
 
+export const dynamic = "force-dynamic";
+
 // GET: Fetch persisted messages for a conversation (only if save_messages=true)
 export async function GET(request: Request) {
   try {
@@ -52,7 +54,10 @@ export async function GET(request: Request) {
       }
     }
 
-    return NextResponse.json({ messages: messages || [] });
+    return NextResponse.json(
+      { messages: messages || [] },
+      { headers: { "Cache-Control": "no-store, max-age=0" } }
+    );
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
