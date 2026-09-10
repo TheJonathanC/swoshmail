@@ -173,3 +173,10 @@ export const FilesIcon = ({ size = 18, className = "" }) => (
     <path d="M16 17H8"></path>
   </svg>
 );
+
+export const ReplyIcon = ({ size = 18, className = "" }) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="9 17 4 12 9 7"></polyline>
+    <path d="M20 18v-2a4 4 0 0 0-4-4H4"></path>
+  </svg>
+);

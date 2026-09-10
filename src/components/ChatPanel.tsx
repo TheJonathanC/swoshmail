@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { MessageIcon, SendIcon, TrashIcon, EditIcon, ChevronLeftIcon, CloseIcon } from "./Icons";
+import { MessageIcon, SendIcon, TrashIcon, EditIcon, ChevronLeftIcon, CloseIcon, ReplyIcon } from "./Icons";
 
 // Supabase public client for Realtime (uses anon key, guarded against missing env vars)
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
@@ -18,12 +18,19 @@ interface Conversation {
   other_user: { id: string; username: string };
 }
 
+export interface ReplyTo {
+  id: string;
+  sender_name: string;
+  content: string;
+}
+
 interface Message {
   id: string;
   sender_id: string;
   content: string;
   created_at: string;
   local?: boolean; // true for session-only messages not persisted
+  reply_to?: ReplyTo | null;
 }
 
 interface ChatPanelProps {
@@ -37,6 +44,7 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<ReplyTo | null>(null);
   const [messageToDelete, setMessageToDelete] = useState<string | null>(null);
   const [activeActionMessageId, setActiveActionMessageId] = useState<string | null>(null);
   const [newChatUsername, setNewChatUsername] = useState("");
@@ -47,8 +55,25 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
   const [unreadCount, setUnreadCount] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
   const channelRef = useRef<any>(null);
   const presenceChannelRef = useRef<any>(null);
+
+  // Dismiss reply, edit, or active actions on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (replyingTo) setReplyingTo(null);
+        if (editingMessageId) {
+          setEditingMessageId(null);
+          setInput("");
+        }
+        if (activeActionMessageId) setActiveActionMessageId(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [replyingTo, editingMessageId, activeActionMessageId]);
 
   // Declare fetchConversations before useEffect (satisfies React Compiler / linter)
   const fetchConversations = useCallback(async () => {
@@ -230,6 +255,10 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
   const openConversation = async (conv: Conversation) => {
     setActiveConv(conv);
     setMessages([]);
+    setReplyingTo(null);
+    setEditingMessageId(null);
+    setActiveActionMessageId(null);
+    setInput("");
     subscribeToConversation(conv);
 
     try {
@@ -347,12 +376,16 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
       }
     } else {
       const localId = `local-${Date.now()}`;
+      const activeReply = replyingTo;
+      setReplyingTo(null);
+
       const msg: Message = {
         id: localId,
         sender_id: userId,
         content,
         created_at: new Date().toISOString(),
         local: !activeConv.save_messages,
+        reply_to: activeReply,
       };
 
       setMessages((prev) => [...prev, msg]);
@@ -362,7 +395,7 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
         const res = await fetch("/api/chat/messages", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ conversationId: activeConv.id, content }),
+          body: JSON.stringify({ conversationId: activeConv.id, content, replyTo: activeReply }),
         });
 
         if (res.ok) {
@@ -388,10 +421,35 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
     setIsSending(false);
   };
 
+  const handleReplyClick = (msg: Message) => {
+    setActiveActionMessageId(null);
+    setEditingMessageId(null);
+    const senderName = msg.sender_id === userId ? "You" : (activeConv?.other_user.username || "User");
+    setReplyingTo({
+      id: msg.id,
+      sender_name: senderName,
+      content: msg.content,
+    });
+    chatInputRef.current?.focus();
+  };
+
+  const handleScrollToMessage = (targetId: string) => {
+    const el = document.getElementById(`chat-msg-${targetId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("chat-bubble-highlight");
+      setTimeout(() => {
+        el.classList.remove("chat-bubble-highlight");
+      }, 1600);
+    }
+  };
+
   const handleEditClick = (msg: Message) => {
     setActiveActionMessageId(null);
+    setReplyingTo(null);
     setEditingMessageId(msg.id);
     setInput(msg.content);
+    chatInputRef.current?.focus();
   };
 
   const confirmDeleteMessage = async () => {
@@ -548,15 +606,31 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
                 return (
                   <div key={msg.id} className={`chat-message-row ${isMine ? "mine" : "other"}`}>
                     <div
-                      className={`chat-bubble ${isMine ? "mine" : "other"} ${isMine ? "chat-bubble-interactive" : ""}`}
+                      id={`chat-msg-${msg.id}`}
+                      className={`chat-bubble ${isMine ? "mine" : "other"} chat-bubble-interactive`}
                       onClick={(e) => {
-                        if (isMine) {
-                          e.stopPropagation();
-                          setActiveActionMessageId((prev) => (prev === msg.id ? null : msg.id));
-                        }
+                        e.stopPropagation();
+                        setActiveActionMessageId((prev) => (prev === msg.id ? null : msg.id));
                       }}
-                      title={isMine ? "Tap to edit or delete" : undefined}
+                      title="Tap for options"
                     >
+                      {msg.reply_to && (
+                        <div
+                          className="chat-reply-quote"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleScrollToMessage(msg.reply_to!.id);
+                          }}
+                          title={`Jump to message from ${msg.reply_to.sender_name}`}
+                        >
+                          <div className="chat-reply-quote-sender">
+                            <ReplyIcon size={11} /> {msg.reply_to.sender_name}
+                          </div>
+                          <div className="chat-reply-quote-text">
+                            {msg.reply_to.content}
+                          </div>
+                        </div>
+                      )}
                       {isPing ? (
                         <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ color: "var(--primary)", fontSize: "10px" }}>●</span> ping</span>
                       ) : isPong ? (
@@ -568,35 +642,49 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
                         {formatTime(msg.created_at)}
                       </div>
                     </div>
-                    {isMine && (
-                      <div className={`message-actions ${isActionActive ? "show-actions" : ""}`}>
-                        <button
-                          type="button"
-                          className="action-icon-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleEditClick(msg);
-                          }}
-                          title="Edit Message"
-                          aria-label="Edit Message"
-                        >
-                          <EditIcon size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          className="action-icon-btn danger"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setMessageToDelete(msg.id);
-                            setActiveActionMessageId(null);
-                          }}
-                          title="Delete Message"
-                          aria-label="Delete Message"
-                        >
-                          <TrashIcon size={14} />
-                        </button>
-                      </div>
-                    )}
+                    <div className={`message-actions ${isActionActive ? "show-actions" : ""}`}>
+                      <button
+                        type="button"
+                        className="action-icon-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleReplyClick(msg);
+                        }}
+                        title="Reply to message"
+                        aria-label="Reply to message"
+                      >
+                        <ReplyIcon size={14} />
+                      </button>
+                      {isMine && (
+                        <>
+                          <button
+                            type="button"
+                            className="action-icon-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleEditClick(msg);
+                            }}
+                            title="Edit Message"
+                            aria-label="Edit Message"
+                          >
+                            <EditIcon size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className="action-icon-btn danger"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMessageToDelete(msg.id);
+                              setActiveActionMessageId(null);
+                            }}
+                            title="Delete Message"
+                            aria-label="Delete Message"
+                          >
+                            <TrashIcon size={14} />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -618,6 +706,31 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
                     setInput("");
                   }}
                   aria-label="Cancel editing"
+                  title="Cancel editing (Esc)"
+                >
+                  <CloseIcon size={14} /> Cancel
+                </button>
+              </div>
+            )}
+
+            {/* Replying banner */}
+            {replyingTo && (
+              <div className="chat-reply-banner">
+                <div className="reply-banner-content">
+                  <div className="reply-banner-header">
+                    <ReplyIcon size={13} />
+                    <span>Replying to {replyingTo.sender_name}</span>
+                  </div>
+                  <div className="reply-banner-text">
+                    {replyingTo.content}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="editing-cancel-btn"
+                  onClick={() => setReplyingTo(null)}
+                  aria-label="Cancel reply"
+                  title="Cancel reply (Esc)"
                 >
                   <CloseIcon size={14} /> Cancel
                 </button>
@@ -628,8 +741,13 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
             <form onSubmit={handleSend} className="chat-input-bar">
               <div className="chat-input-wrapper">
                 <input
+                  ref={chatInputRef}
                   className="form-input chat-input-field"
-                  placeholder={`Message ${activeConv.other_user.username}...`}
+                  placeholder={
+                    replyingTo
+                      ? `Reply to ${replyingTo.sender_name}...`
+                      : `Message ${activeConv.other_user.username}...`
+                  }
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   maxLength={500}

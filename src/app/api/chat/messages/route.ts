@@ -41,7 +41,24 @@ export async function GET(request: Request) {
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-    const messages = (rawMessages || []).reverse();
+    const messages = (rawMessages || []).reverse().map((m: any) => {
+      let content = m.content;
+      let replyTo = null;
+      if (typeof m.content === "string" && m.content.startsWith('{"text":')) {
+        try {
+          const parsed = JSON.parse(m.content);
+          if (typeof parsed.text === "string" && parsed.reply_to) {
+            content = parsed.text;
+            replyTo = parsed.reply_to;
+          }
+        } catch {}
+      }
+      return {
+        ...m,
+        content,
+        reply_to: replyTo,
+      };
+    });
 
     // Snapchat mechanics: if save_messages is false, delete the messages the user just read
     if (!conv.save_messages && messages && messages.length > 0) {
@@ -79,7 +96,7 @@ export async function POST(request: Request) {
     const rl = checkRateLimit(`chat_send_${userId}`, 30, 60000);
     if (!rl.success) return NextResponse.json({ error: "Rate limit exceeded. You are sending messages too fast." }, { status: 429 });
 
-    const { conversationId, content } = await request.json();
+    const { conversationId, content, replyTo } = await request.json();
     if (!conversationId || !content?.trim())
       return NextResponse.json({ error: "conversationId and content are required" }, { status: 400 });
     
@@ -97,9 +114,20 @@ export async function POST(request: Request) {
 
     if (!conv) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
 
+    const contentToStore = replyTo && typeof replyTo === "object"
+      ? JSON.stringify({
+          text: content.trim(),
+          reply_to: {
+            id: String(replyTo.id),
+            sender_name: String(replyTo.sender_name || "User"),
+            content: String(replyTo.content || "").slice(0, 150),
+          },
+        })
+      : content.trim();
+
     const { data: msg, error } = await supabase
       .from("messages")
-      .insert({ conversation_id: conversationId, sender_id: userId, content: content.trim() })
+      .insert({ conversation_id: conversationId, sender_id: userId, content: contentToStore })
       .select()
       .single();
 
@@ -132,7 +160,14 @@ export async function POST(request: Request) {
       console.error("Message auto-pruning error:", pruneErr);
     }
 
-    return NextResponse.json({ success: true, message: msg });
+    return NextResponse.json({
+      success: true,
+      message: {
+        ...msg,
+        content: content.trim(),
+        reply_to: replyTo || null,
+      },
+    });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to persist message";
     return NextResponse.json({ error: message }, { status: 500 });
@@ -159,10 +194,31 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Message exceeds 500 characters" }, { status: 400 });
     }
 
+    // Check if the original message had a reply_to attached
+    const { data: existing } = await supabase
+      .from("messages")
+      .select("content")
+      .eq("id", messageId)
+      .eq("sender_id", userId)
+      .single();
+
+    let updatedContentToStore = newContent.trim();
+    if (existing?.content && typeof existing.content === "string" && existing.content.startsWith('{"text":')) {
+      try {
+        const parsed = JSON.parse(existing.content);
+        if (parsed.reply_to) {
+          updatedContentToStore = JSON.stringify({
+            text: newContent.trim(),
+            reply_to: parsed.reply_to,
+          });
+        }
+      } catch {}
+    }
+
     // Update message, ensuring the user is the sender
     const { data: msg, error } = await supabase
       .from("messages")
-      .update({ content: newContent.trim() })
+      .update({ content: updatedContentToStore })
       .eq("id", messageId)
       .eq("sender_id", userId) // Security: only sender can edit
       .select()
@@ -170,7 +226,13 @@ export async function PATCH(request: Request) {
 
     if (error || !msg) return NextResponse.json({ error: "Failed to edit message. It may not exist or you don't own it." }, { status: 403 });
 
-    return NextResponse.json({ success: true, message: msg });
+    return NextResponse.json({
+      success: true,
+      message: {
+        ...msg,
+        content: newContent.trim(),
+      },
+    });
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to edit message";
     return NextResponse.json({ error: message }, { status: 500 });

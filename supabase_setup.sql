@@ -84,3 +84,5 @@ ALTER TABLE files ADD COLUMN IF NOT EXISTS folder_id UUID REFERENCES folders(id)
 CREATE INDEX IF NOT EXISTS idx_folders_owner ON folders(owner_id);
 CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id);
 
+-- Note: Swosh Chat reply metadata is serialized within messages.content for seamless zero-migration compatibility.
+
