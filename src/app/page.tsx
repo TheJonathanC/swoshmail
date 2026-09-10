@@ -5,7 +5,8 @@ import { useSession, signIn, signOut } from "next-auth/react";
 import dynamic from "next/dynamic";
 import { 
   FolderIcon, FileIcon, CloudIcon, TrashIcon, DownloadIcon, EyeIcon, 
-  MailIcon, UploadIcon, ChevronRightIcon, SearchIcon, PaperclipIcon, PlusIcon, MessageIcon, CheckIcon, CloseIcon
+  MailIcon, UploadIcon, ChevronRightIcon, SearchIcon, PaperclipIcon, PlusIcon, MessageIcon, CheckIcon, CloseIcon,
+  AlertCircleIcon, LockIcon
 } from "@/components/Icons";
 
 const ChatPanel = dynamic(() => import("@/components/ChatPanel"), { ssr: false });
@@ -122,6 +123,10 @@ export default function Home() {
     setTimeout(() => {
       setToasts((prev) => prev.filter((toast) => toast.id !== id));
     }, 5000);
+  };
+
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
   };
 
   const fetchDriveFiles = async () => {
@@ -527,31 +532,41 @@ export default function Home() {
             </div>
 
             <div className="mobile-user-actions">
-              <span className="user-handle">@{session?.user?.name}</span>
-              <button className="btn-secondary lock-btn" onClick={handleLogout} title="Lock Console">
-                Lock
+              <div className="mobile-user-badge" title={`@${session?.user?.name}`}>
+                <span className="user-dot"></span>
+                <span className="user-handle">@{session?.user?.name}</span>
+              </div>
+              <button className="btn-secondary lock-btn" onClick={handleLogout} title="Lock Console" aria-label="Lock Console">
+                <LockIcon size={13} />
+                <span className="lock-btn-text">Lock</span>
               </button>
             </div>
           </div>
 
-          <nav className="sidebar-menu">
+          <nav className="sidebar-menu" aria-label="Main Navigation">
             <button
               className={`nav-item ${activeTab === "mail" ? "active" : ""}`}
               onClick={() => setActiveTab("mail")}
             >
-              <MailIcon size={18} /> <span>Swosh Mail</span>
+              <MailIcon size={18} />
+              <span className="nav-label-desktop">Swosh Mail</span>
+              <span className="nav-label-mobile">Mail</span>
             </button>
             <button
               className={`nav-item ${activeTab === "drive" ? "active" : ""}`}
               onClick={() => setActiveTab("drive")}
             >
-              <CloudIcon size={18} /> <span>Swosh Drive</span>
+              <CloudIcon size={18} />
+              <span className="nav-label-desktop">Swosh Drive</span>
+              <span className="nav-label-mobile">Drive</span>
             </button>
             <button
               className={`nav-item ${activeTab === "chat" ? "active" : ""}`}
               onClick={() => setActiveTab("chat")}
             >
-              <MessageIcon size={18} /> <span>Swosh Chat</span>
+              <MessageIcon size={18} />
+              <span className="nav-label-desktop">Swosh Chat</span>
+              <span className="nav-label-mobile">Chat</span>
             </button>
           </nav>
         </div>
@@ -615,7 +630,7 @@ export default function Home() {
                     onChange={(e) => setEmailSubject(e.target.value)}
                     disabled={isSendingMail}
                   />
-                  <div className="input-desc">Defaults to "Swoshmail Message" or attachment listings.</div>
+                  <div className="input-desc">Defaults to &ldquo;Swoshmail Message&rdquo; or attachment listings.</div>
                 </div>
 
                 <div className="form-group" style={{ marginBottom: 0 }}>
@@ -680,7 +695,7 @@ export default function Home() {
                     ))}
                     {isMailDirectFilesTooLarge && (
                       <div className="error-text" style={{ background: "rgba(239,68,68,0.08)", padding: "10px", borderRadius: "8px" }}>
-                        ⚠️ Total local uploads size ({formatBytes(totalDirectBytes)}) exceeds Vercel's **4.5 MB request limit**. Uploading will likely fail. Consider uploading files to Swosh Drive first, then attaching them!
+                        ⚠️ Total local uploads size ({formatBytes(totalDirectBytes)}) exceeds Vercel&apos;s **4.5 MB request limit**. Uploading will likely fail. Consider uploading files to Swosh Drive first, then attaching them!
                       </div>
                     )}
                   </div>
@@ -752,37 +767,41 @@ export default function Home() {
 
         {/* MODULE: Swosh Drive tab */}
         {activeTab === "drive" && (
-          <div>
-            <div className="drive-header-bar" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-              <h2 style={{ fontSize: "20px", fontWeight: 700 }}>Swosh Drive Explorer</h2>
-              <div className="drive-actions-group" style={{ display: "flex", gap: "12px" }}>
+          <div className="drive-tab-content">
+            <div className="drive-header-bar">
+              <div className="drive-title-row">
+                <h2 className="module-title">Swosh Drive Explorer</h2>
+                <div className="mobile-quota-badge">
+                  <CloudIcon size={12} /> {formatBytes(totalUsed)} / 1 GB
+                </div>
+              </div>
+              <div className="drive-actions-group">
                 {isCreatingFolder ? (
-                  <form onSubmit={handleCreateFolder} style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                  <form onSubmit={handleCreateFolder} className="new-folder-form">
                     <input
                       type="text"
-                      className="form-input"
-                      style={{ padding: "8px 12px", width: "160px", fontSize: "13px" }}
+                      className="form-input new-folder-input"
                       placeholder="Folder name..."
                       value={newFolderName}
                       onChange={(e) => setNewFolderName(e.target.value)}
                       autoFocus
                     />
-                    <button type="submit" className="btn-primary" style={{ width: "auto", padding: "8px 12px" }}>
-                      Create
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      style={{ padding: "8px 12px" }}
-                      onClick={() => { setIsCreatingFolder(false); setNewFolderName(""); }}
-                    >
-                      Cancel
-                    </button>
+                    <div className="new-folder-actions">
+                      <button type="submit" className="btn-primary new-folder-btn">
+                        Create
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary new-folder-btn"
+                        onClick={() => { setIsCreatingFolder(false); setNewFolderName(""); }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
                   </form>
                 ) : (
                   <button
-                    className="btn-secondary"
-                    style={{ padding: "10px 18px" }}
+                    className="btn-secondary drive-action-btn"
                     onClick={() => setIsCreatingFolder(true)}
                   >
                     <PlusIcon size={16} /> New Folder
@@ -790,8 +809,7 @@ export default function Home() {
                 )}
 
                 <button
-                  className="btn-primary"
-                  style={{ width: "auto", padding: "10px 18px" }}
+                  className="btn-primary drive-action-btn"
                   onClick={() => driveFileInputRef.current?.click()}
                   disabled={isDriveUploading}
                 >
@@ -833,10 +851,13 @@ export default function Home() {
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleDriveDrop}
-              style={{ marginBottom: "25px", padding: "20px 15px" }}
+              onClick={() => driveFileInputRef.current?.click()}
             >
               <div className="dropzone-icon" style={{ color: "var(--primary)" }}><CloudIcon size={36} /></div>
-              <div className="dropzone-title" style={{ fontSize: "13px" }}>Drag files here to upload directly to this directory</div>
+              <div className="dropzone-title">
+                <span className="desktop-drop-text">Drag files here to upload directly to this directory</span>
+                <span className="mobile-drop-text">Tap or drop files to upload</span>
+              </div>
             </div>
 
             {isDriveUploading && (
@@ -986,8 +1007,8 @@ export default function Home() {
 
         {/* MODULE: Swosh Chat tab */}
         {activeTab === "chat" && (
-          <div>
-            <h2 style={{ fontSize: "20px", fontWeight: 700, marginBottom: "20px" }}>Swosh Chat</h2>
+          <div className="chat-tab-wrapper">
+            <h2 className="module-title desktop-chat-title">Swosh Chat</h2>
             <ChatPanel
               userId={(session?.user as any)?.id}
               username={(session?.user as any)?.username || session?.user?.name || ""}
@@ -1202,14 +1223,32 @@ export default function Home() {
       )}
 
       {/* Toast Notification Container */}
-      <div className="toast-container">
-        {toasts.map((toast) => (
-          <div key={toast.id} className={`toast toast-${toast.type}`}>
-            <span className="toast-icon">{toast.type === "success" ? <CheckIcon size={14} /> : "⚠"}</span>
+      <div className="toast-container" aria-live="polite">
+        {toasts.slice(-3).map((toast) => (
+          <div
+            key={toast.id}
+            className={`toast toast-${toast.type}`}
+            onClick={() => removeToast(toast.id)}
+            role="alert"
+          >
+            <div className="toast-icon-wrapper">
+              {toast.type === "success" ? <CheckIcon size={16} /> : <AlertCircleIcon size={16} />}
+            </div>
             <div className="toast-content">
               <div className="toast-title">{toast.title}</div>
               <div className="toast-message">{toast.message}</div>
             </div>
+            <button
+              type="button"
+              className="toast-close-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                removeToast(toast.id);
+              }}
+              aria-label="Dismiss notification"
+            >
+              <CloseIcon size={14} />
+            </button>
           </div>
         ))}
       </div>

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { MessageIcon, SendIcon, TrashIcon, EditIcon, ChevronLeftIcon } from "./Icons";
+import { MessageIcon, SendIcon, TrashIcon, EditIcon, ChevronLeftIcon, CloseIcon } from "./Icons";
 
 // Supabase public client for Realtime (uses anon key, guarded against missing env vars)
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
@@ -38,6 +38,7 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
   const [input, setInput] = useState("");
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [messageToDelete, setMessageToDelete] = useState<string | null>(null);
+  const [activeActionMessageId, setActiveActionMessageId] = useState<string | null>(null);
   const [newChatUsername, setNewChatUsername] = useState("");
   const [newChatError, setNewChatError] = useState("");
   const [isStartingChat, setIsStartingChat] = useState(false);
@@ -388,6 +389,7 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
   };
 
   const handleEditClick = (msg: Message) => {
+    setActiveActionMessageId(null);
     setEditingMessageId(msg.id);
     setInput(msg.content);
   };
@@ -396,6 +398,7 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
     if (!messageToDelete) return;
     const msgId = messageToDelete;
     setMessageToDelete(null);
+    setActiveActionMessageId(null);
     
     // Optimistic delete
     setMessages((prev) => prev.filter((m) => m.id !== msgId));
@@ -422,21 +425,21 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
         {/* New chat form */}
         <form onSubmit={handleStartChat} className="chat-new-form">
           <label className="form-label" style={{ display: "block", marginBottom: "8px" }}>New Chat</label>
-          <div style={{ display: "flex", gap: "6px" }}>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
             <input
-              className="form-input"
-              style={{ flex: 1, padding: "8px 10px", fontSize: "13px" }}
+              className="form-input new-chat-input"
               placeholder="Username..."
               value={newChatUsername}
               onChange={(e) => { setNewChatUsername(e.target.value); setNewChatError(""); }}
+              autoComplete="off"
             />
             <button
               type="submit"
-              className="btn-primary"
-              style={{ width: "auto", padding: "8px 12px", flexShrink: 0 }}
+              className="btn-primary new-chat-btn"
               disabled={isStartingChat}
+              aria-label="Start chat"
             >
-              {isStartingChat ? <div className="spinner" style={{ width: "12px", height: "12px" }} /> : "→"}
+              {isStartingChat ? <div className="spinner" style={{ width: "14px", height: "14px" }} /> : "→"}
             </button>
           </div>
           {newChatError && <p className="error-text" style={{ marginTop: "6px", fontSize: "11px" }}>{newChatError}</p>}
@@ -487,35 +490,43 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
               <button
                 type="button"
                 className="chat-back-btn"
-                onClick={() => setActiveConv(null)}
+                onClick={() => {
+                  setActiveConv(null);
+                  setActiveActionMessageId(null);
+                }}
                 title="Back to conversations"
+                aria-label="Back to conversations"
               >
-                <ChevronLeftIcon size={18} />
+                <ChevronLeftIcon size={20} />
               </button>
 
-              <div className={`online-dot ${isOnline(activeConv.other_user.id) ? "active" : ""}`} style={{ width: "10px", height: "10px" }} />
-              <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                <span style={{ fontSize: "15px", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {activeConv.other_user.username}
-                </span>
-                <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "1px" }}>
-                  {isOnline(activeConv.other_user.id) ? "Online" : "Offline"}
-                </span>
+              <div className="chat-header-user-info">
+                <div className={`online-dot ${isOnline(activeConv.other_user.id) ? "active" : ""}`} style={{ width: "10px", height: "10px" }} />
+                <div className="chat-header-names">
+                  <span className="chat-header-username" title={activeConv.other_user.username}>
+                    {activeConv.other_user.username}
+                  </span>
+                  <span className="chat-header-status">
+                    {isOnline(activeConv.other_user.id) ? "Online" : "Offline"}
+                  </span>
+                </div>
               </div>
               
               <div className="toggle-switch-wrapper">
-                <span className="toggle-label">Keep History</span>
+                <span className="toggle-label toggle-label-desktop">Keep History</span>
+                <span className="toggle-label toggle-label-mobile">History</span>
                 <button
                   type="button"
                   className={`toggle-switch ${activeConv.save_messages ? "active" : ""}`}
                   onClick={handleToggleSave}
-                  title="Toggle Disappearing Messages"
+                  title={activeConv.save_messages ? "Messages are saved" : "Disappearing mode enabled"}
+                  aria-label="Toggle Disappearing Messages"
                 />
               </div>
             </div>
 
             {/* Messages */}
-            <div className="chat-messages-container">
+            <div className="chat-messages-container" onClick={() => setActiveActionMessageId(null)}>
               {messages.length === 0 && (
                 <div style={{ textAlign: "center", marginTop: "auto", marginBottom: "auto", padding: "20px" }}>
                   <p style={{ color: "var(--text-muted)", fontSize: "13px", marginBottom: "8px" }}>
@@ -532,9 +543,20 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
                 const isMine = msg.sender_id === userId;
                 const isPing = msg.content.toLowerCase() === "ping";
                 const isPong = msg.content.toLowerCase() === "pong";
+                const isActionActive = activeActionMessageId === msg.id;
+
                 return (
                   <div key={msg.id} className={`chat-message-row ${isMine ? "mine" : "other"}`}>
-                    <div className={`chat-bubble ${isMine ? "mine" : "other"}`}>
+                    <div
+                      className={`chat-bubble ${isMine ? "mine" : "other"} ${isMine ? "chat-bubble-interactive" : ""}`}
+                      onClick={(e) => {
+                        if (isMine) {
+                          e.stopPropagation();
+                          setActiveActionMessageId((prev) => (prev === msg.id ? null : msg.id));
+                        }
+                      }}
+                      title={isMine ? "Tap to edit or delete" : undefined}
+                    >
                       {isPing ? (
                         <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ color: "var(--primary)", fontSize: "10px" }}>●</span> ping</span>
                       ) : isPong ? (
@@ -547,11 +569,30 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
                       </div>
                     </div>
                     {isMine && (
-                      <div className="message-actions">
-                        <button className="action-icon-btn" onClick={() => handleEditClick(msg)} title="Edit Message">
+                      <div className={`message-actions ${isActionActive ? "show-actions" : ""}`}>
+                        <button
+                          type="button"
+                          className="action-icon-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEditClick(msg);
+                          }}
+                          title="Edit Message"
+                          aria-label="Edit Message"
+                        >
                           <EditIcon size={14} />
                         </button>
-                        <button className="action-icon-btn danger" onClick={() => setMessageToDelete(msg.id)} title="Delete Message">
+                        <button
+                          type="button"
+                          className="action-icon-btn danger"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMessageToDelete(msg.id);
+                            setActiveActionMessageId(null);
+                          }}
+                          title="Delete Message"
+                          aria-label="Delete Message"
+                        >
                           <TrashIcon size={14} />
                         </button>
                       </div>
@@ -562,42 +603,51 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
               <div ref={messagesEndRef} />
             </div>
 
+            {/* Editing banner */}
+            {editingMessageId && (
+              <div className="chat-editing-banner">
+                <div className="editing-banner-content">
+                  <EditIcon size={14} />
+                  <span>Editing message</span>
+                </div>
+                <button
+                  type="button"
+                  className="editing-cancel-btn"
+                  onClick={() => {
+                    setEditingMessageId(null);
+                    setInput("");
+                  }}
+                  aria-label="Cancel editing"
+                >
+                  <CloseIcon size={14} /> Cancel
+                </button>
+              </div>
+            )}
+
             {/* Message input */}
             <form onSubmit={handleSend} className="chat-input-bar">
-              <div style={{ flex: 1, position: "relative" }}>
+              <div className="chat-input-wrapper">
                 <input
-                  className="form-input"
-                  style={{ width: "100%", padding: "12px 18px", paddingRight: "60px", borderRadius: "100px" }}
-                  placeholder={editingMessageId ? "Editing message..." : `Message ${activeConv.other_user.username}...`}
+                  className="form-input chat-input-field"
+                  placeholder={`Message ${activeConv.other_user.username}...`}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   maxLength={500}
                   autoComplete="off"
                 />
-                <div style={{ position: "absolute", right: "16px", top: "50%", transform: "translateY(-50%)", fontSize: "10px", color: input.length >= 450 ? "var(--danger)" : "var(--text-muted)", pointerEvents: "none" }}>
-                  {input.length}/500
-                </div>
+                {input.length >= 350 && (
+                  <div className="chat-char-counter" style={{ color: input.length >= 480 ? "var(--danger)" : "var(--text-muted)" }}>
+                    {input.length}/500
+                  </div>
+                )}
               </div>
-              {editingMessageId && (
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  style={{ borderRadius: "100px", padding: "12px 16px", background: "rgba(255,255,255,0.05)" }}
-                  onClick={() => {
-                    setEditingMessageId(null);
-                    setInput("");
-                  }}
-                >
-                  Cancel
-                </button>
-              )}
               <button
                 type="submit"
-                className="btn-primary"
-                style={{ width: "44px", height: "44px", padding: "0", borderRadius: "50%", flexShrink: 0 }}
+                className="btn-primary chat-send-btn"
                 disabled={!input.trim() || isSending}
+                aria-label="Send message"
               >
-                {isSending ? <div className="spinner" style={{ width: "14px", height: "14px" }} /> : <div style={{ display: "flex", marginLeft: "-2px" }}><SendIcon size={18} /></div>}
+                {isSending ? <div className="spinner" style={{ width: "16px", height: "16px" }} /> : <SendIcon size={18} />}
               </button>
             </form>
           </>
