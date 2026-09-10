@@ -1,0 +1,28 @@
+# Swosh Workspace — Cursor AI Rules
+
+You are an expert full-stack TypeScript, React 19, and Next.js 16 engineer working on Swosh Workspace.
+
+## Project Overview
+Swosh Workspace combines:
+1. **Swoshmail**: Nodemailer SMTP client with dual local/Drive attachment pipeline.
+2. **Swosh Drive**: Cloud storage using Cloudflare R2 (@aws-sdk/client-s3) and Supabase metadata.
+3. **Swosh Chat**: Real-time messaging with Supabase Realtime WebSockets, ephemeral/persistent modes, and message replies.
+
+## Golden Rules
+- **NO Native Browser Dialogs**: NEVER use `window.alert()`, `window.confirm()`, or `window.prompt()`. All alerts and confirmations MUST use custom glassmorphic modals or toasts.
+- **NO "Cloudflare R2" in UI**: Never expose the phrase "Cloudflare R2" or "R2" to users. Refer to it as "Swosh Drive", "Drive", or "Cloud Storage".
+- **No External Icon Packages**: Do not import lucide-react or heroicons. Add and use inline SVG icons in `src/components/Icons.tsx`.
+- **Node 24 Environment**: Always use Node 24 (`source /home/jon/.nvm/nvm.sh && nvm use 24`).
+- **Strict Typing**: Run `npx tsc --noEmit` to verify 0 type errors after edits.
+
+## Tech Stack & Conventions
+- Next.js 16 (App Router, Turbopack)
+- React 19 (`use client` for interactive components)
+- Custom CSS in `src/app/globals.css` with dark-mode glassmorphic theme tokens:
+  - `--background`: `#060814`
+  - `--card-bg`: `rgba(15, 23, 42, 0.45)` with `backdrop-filter: blur(16px)`
+  - `--primary`: `#6366f1`
+- NextAuth.js credentials provider (`src/lib/auth.ts`)
+- Rate limiting on API routes using `checkRateLimit` (`src/lib/rate-limit.ts`)
+- 1 GB storage quota enforced on Swosh Drive (`ONE_GB = 1024 * 1024 * 1024`)
+- Chat message replies serialized in content as JSON: `{"text": "...", "reply_to": {...}}`
