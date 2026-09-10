@@ -79,8 +79,11 @@ export default function Home() {
   // Folder creation and deletion state
   const [newFolderName, setNewFolderName] = useState("");
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [isSubmittingFolder, setIsSubmittingFolder] = useState(false);
   const [folderToDelete, setFolderToDelete] = useState<{ id: string; name: string } | null>(null);
   const [isDeletingFolder, setIsDeletingFolder] = useState(false);
+  const [fileToDelete, setFileToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [isDeletingFile, setIsDeletingFile] = useState(false);
 
   // File Preview state
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
@@ -193,8 +196,9 @@ export default function Home() {
 
   const handleCreateFolder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newFolderName.trim()) return;
+    if (!newFolderName.trim() || isSubmittingFolder) return;
 
+    setIsSubmittingFolder(true);
     try {
       const res = await fetch("/api/drive/folders", {
         method: "POST",
@@ -206,7 +210,7 @@ export default function Home() {
       });
 
       if (res.ok) {
-        addToast("success", "Folder Created", `Folder "${newFolderName}" created.`);
+        addToast("success", "Folder Created", `Folder "${newFolderName.trim()}" created.`);
         setNewFolderName("");
         setIsCreatingFolder(false);
         fetchDriveFiles();
@@ -216,6 +220,8 @@ export default function Home() {
       }
     } catch (err) {
       addToast("danger", "Error", "Network error while creating folder.");
+    } finally {
+      setIsSubmittingFolder(false);
     }
   };
 
@@ -297,26 +303,34 @@ export default function Home() {
     xhr.send(formData);
   };
 
-  const handleDriveFileDelete = async (fileId: string, fileName: string) => {
-    if (!confirm(`Are you sure you want to delete ${fileName}?`)) return;
+  const handleDriveFileDelete = (fileId: string, fileName: string) => {
+    setFileToDelete({ id: fileId, name: fileName });
+  };
+
+  const confirmFileDelete = async () => {
+    if (!fileToDelete || isDeletingFile) return;
+    setIsDeletingFile(true);
 
     try {
       const res = await fetch("/api/drive/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileId }),
+        body: JSON.stringify({ fileId: fileToDelete.id }),
       });
 
       if (res.ok) {
-        addToast("success", "Deleted", `${fileName} was removed.`);
-        setAttachedDriveFiles((prev) => prev.filter((f) => f.id !== fileId));
+        addToast("success", "Deleted", `${fileToDelete.name} was removed.`);
+        setAttachedDriveFiles((prev) => prev.filter((f) => f.id !== fileToDelete.id));
         fetchDriveFiles();
       } else {
         const data = await res.json();
         addToast("danger", "Delete Failed", data.error || "Failed to delete file.");
       }
-    } catch (err) {
+    } catch {
       addToast("danger", "Delete Error", "Could not connect to database.");
+    } finally {
+      setIsDeletingFile(false);
+      setFileToDelete(null);
     }
   };
 
@@ -776,44 +790,30 @@ export default function Home() {
                 </div>
               </div>
               <div className="drive-actions-group">
-                {isCreatingFolder ? (
-                  <form onSubmit={handleCreateFolder} className="new-folder-form">
-                    <input
-                      type="text"
-                      className="form-input new-folder-input"
-                      placeholder="Folder name..."
-                      value={newFolderName}
-                      onChange={(e) => setNewFolderName(e.target.value)}
-                      autoFocus
-                    />
-                    <div className="new-folder-actions">
-                      <button type="submit" className="btn-primary new-folder-btn">
-                        Create
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary new-folder-btn"
-                        onClick={() => { setIsCreatingFolder(false); setNewFolderName(""); }}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </form>
-                ) : (
-                  <button
-                    className="btn-secondary drive-action-btn"
-                    onClick={() => setIsCreatingFolder(true)}
-                  >
-                    <PlusIcon size={16} /> New Folder
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="btn-secondary drive-action-btn"
+                  onClick={() => {
+                    setNewFolderName("");
+                    setIsCreatingFolder(true);
+                  }}
+                >
+                  <PlusIcon size={16} /> <span className="drive-btn-text">New Folder</span>
+                </button>
 
                 <button
+                  type="button"
                   className="btn-primary drive-action-btn"
                   onClick={() => driveFileInputRef.current?.click()}
                   disabled={isDriveUploading}
                 >
-                  {isDriveUploading ? "Uploading..." : <><UploadIcon size={16} /> Upload File</>}
+                  {isDriveUploading ? (
+                    "Uploading..."
+                  ) : (
+                    <>
+                      <UploadIcon size={16} /> <span className="drive-btn-text">Upload File</span>
+                    </>
+                  )}
                 </button>
                 <input
                   type="file"
@@ -861,7 +861,7 @@ export default function Home() {
             </div>
 
             {isDriveUploading && (
-              <div className="progress-container" style={{ marginBottom: "25px" }}>
+              <div className="progress-container" style={{ marginTop: "12px", marginBottom: "20px" }}>
                 <div className="progress-label">
                   <span>Uploading file to Cloudflare R2...</span>
                   <span>{driveUploadProgress}%</span>
@@ -873,7 +873,7 @@ export default function Home() {
             )}
 
             {/* File search explorer */}
-            <div className="form-group" style={{ marginBottom: "20px" }}>
+            <div className="form-group drive-search-group">
               <div className="input-wrapper">
                 <input
                   type="text"
@@ -905,8 +905,10 @@ export default function Home() {
                       </span>
                     </div>
                     <button
+                      type="button"
                       className="folder-delete-btn"
                       title="Delete folder and contents"
+                      aria-label={`Delete folder ${folder.name}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         setFolderToDelete({ id: folder.id, name: folder.name });
@@ -946,17 +948,22 @@ export default function Home() {
                     </thead>
                     <tbody>
                       {filteredDriveFiles.map((file) => (
-                        <tr key={file.id}>
-                          <td>
-                            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                              <span style={{ color: "var(--text-muted)" }}><FileIcon size={18} /></span>
-                              <span style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", maxWidth: "250px", whiteSpace: "nowrap" }} title={file.name}>
-                                {file.name}
-                              </span>
+                        <tr key={file.id} className="drive-file-row">
+                          <td className="drive-col-name">
+                            <div className="drive-file-main-info">
+                              <span className="drive-file-icon-badge"><FileIcon size={18} /></span>
+                              <div className="drive-file-text-col">
+                                <span className="drive-file-name" title={file.name}>
+                                  {file.name}
+                                </span>
+                                <span className="drive-mobile-meta">
+                                  {formatBytes(parseInt(file.size))} &bull; {new Date(file.uploaded_at).toLocaleDateString()}
+                                </span>
+                              </div>
                             </div>
                           </td>
-                          <td style={{ color: "var(--text-muted)", fontSize: "13px" }}>{formatBytes(parseInt(file.size))}</td>
-                          <td style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+                          <td className="drive-col-size">{formatBytes(parseInt(file.size))}</td>
+                          <td className="drive-col-date">
                             {new Date(file.uploaded_at).toLocaleDateString()}
                           </td>
                           <td className="action-buttons-cell">
@@ -965,6 +972,7 @@ export default function Home() {
                                 type="button"
                                 className="btn-icon"
                                 title="Preview File"
+                                aria-label="Preview File"
                                 onClick={() => handleFilePreview(file)}
                               >
                                 <EyeIcon size={16} />
@@ -974,6 +982,7 @@ export default function Home() {
                               type="button"
                               className="btn-icon"
                               title="Attach to Swosh Mail"
+                              aria-label="Attach to Swosh Mail"
                               onClick={() => handleDriveFileMail(file)}
                             >
                               <MailIcon size={16} />
@@ -982,6 +991,7 @@ export default function Home() {
                               href={file.url}
                               className="btn-icon"
                               title="Download"
+                              aria-label="Download"
                               download={file.name}
                             >
                               <DownloadIcon size={16} />
@@ -990,6 +1000,7 @@ export default function Home() {
                               type="button"
                               className="btn-icon delete"
                               title="Delete File"
+                              aria-label="Delete File"
                               onClick={() => handleDriveFileDelete(file.id, file.name)}
                             >
                               <TrashIcon size={16} />
@@ -1017,6 +1028,69 @@ export default function Home() {
         )}
       </main>
 
+      {/* MODAL: Create New Folder */}
+      {isCreatingFolder && (
+        <div className="modal-overlay" onClick={() => !isSubmittingFolder && setIsCreatingFolder(false)}>
+          <div className="modal-content glass-panel" style={{ maxWidth: "420px" }} onClick={(e) => e.stopPropagation()}>
+            <form onSubmit={handleCreateFolder}>
+              <header className="modal-header">
+                <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--foreground)" }}>
+                  <span className="folder-icon" style={{ display: "inline-flex" }}><FolderIcon size={20} /></span> New Folder
+                </h3>
+                <button
+                  type="button"
+                  className="btn-remove"
+                  style={{ padding: "6px" }}
+                  onClick={() => setIsCreatingFolder(false)}
+                  disabled={isSubmittingFolder}
+                  title="Close"
+                  aria-label="Close modal"
+                >
+                  <CloseIcon size={16} />
+                </button>
+              </header>
+              <div className="modal-body" style={{ padding: "16px 0 20px 0" }}>
+                <label className="form-label" htmlFor="popup-folder-input">Folder Name</label>
+                <input
+                  id="popup-folder-input"
+                  type="text"
+                  className="form-input"
+                  placeholder="e.g. Invoices, Project Assets..."
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  autoFocus
+                  maxLength={60}
+                  disabled={isSubmittingFolder}
+                  required
+                />
+              </div>
+              <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "15px" }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ padding: "10px 16px" }}
+                  onClick={() => {
+                    setIsCreatingFolder(false);
+                    setNewFolderName("");
+                  }}
+                  disabled={isSubmittingFolder}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ padding: "10px 18px", width: "auto" }}
+                  disabled={!newFolderName.trim() || isSubmittingFolder}
+                >
+                  {isSubmittingFolder ? <div className="spinner"></div> : "Create Folder"}
+                </button>
+              </footer>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* MODAL: Folder Delete Confirmation */}
       {folderToDelete && (
         <div className="modal-overlay" onClick={() => !isDeletingFolder && setFolderToDelete(null)}>
@@ -1025,8 +1099,19 @@ export default function Home() {
               <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--danger)" }}>
                 <TrashIcon size={18} /> Delete Folder
               </h3>
+              <button
+                type="button"
+                className="btn-remove"
+                style={{ padding: "6px" }}
+                onClick={() => setFolderToDelete(null)}
+                disabled={isDeletingFolder}
+                title="Close"
+                aria-label="Close modal"
+              >
+                <CloseIcon size={16} />
+              </button>
             </header>
-            <div className="modal-body" style={{ padding: "20px" }}>
+            <div className="modal-body" style={{ padding: "20px 0" }}>
               <p style={{ marginBottom: "12px", fontSize: "14px", lineHeight: 1.5 }}>
                 Are you sure you want to delete the folder <strong>&ldquo;{folderToDelete.name}&rdquo;</strong>?
               </p>
@@ -1036,6 +1121,7 @@ export default function Home() {
             </div>
             <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "15px" }}>
               <button
+                type="button"
                 className="btn-secondary"
                 style={{ padding: "10px 16px" }}
                 onClick={() => setFolderToDelete(null)}
@@ -1044,12 +1130,65 @@ export default function Home() {
                 Cancel
               </button>
               <button
+                type="button"
                 className="btn-primary"
                 style={{ background: "var(--danger)", padding: "10px 16px", width: "auto" }}
                 onClick={confirmFolderDelete}
                 disabled={isDeletingFolder}
               >
                 {isDeletingFolder ? <div className="spinner"></div> : "Delete Permanently"}
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: File Delete Confirmation */}
+      {fileToDelete && (
+        <div className="modal-overlay" onClick={() => !isDeletingFile && setFileToDelete(null)}>
+          <div className="modal-content glass-panel" style={{ maxWidth: "400px" }} onClick={(e) => e.stopPropagation()}>
+            <header className="modal-header">
+              <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--danger)" }}>
+                <TrashIcon size={18} /> Delete File
+              </h3>
+              <button
+                type="button"
+                className="btn-remove"
+                style={{ padding: "6px" }}
+                onClick={() => setFileToDelete(null)}
+                disabled={isDeletingFile}
+                title="Close"
+                aria-label="Close modal"
+              >
+                <CloseIcon size={16} />
+              </button>
+            </header>
+            <div className="modal-body" style={{ padding: "20px 0" }}>
+              <p style={{ marginBottom: "12px", fontSize: "14px", lineHeight: 1.5 }}>
+                Are you sure you want to delete <strong>&ldquo;{fileToDelete.name}&rdquo;</strong>?
+              </p>
+              <p style={{ fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.5 }}>
+                This file will be permanently removed from your Swosh Drive and cloud storage. This action cannot be undone.
+              </p>
+            </div>
+            <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "15px" }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: "10px 16px" }}
+                onClick={() => setFileToDelete(null)}
+                disabled={isDeletingFile}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ background: "var(--danger)", padding: "10px 16px", width: "auto" }}
+                onClick={confirmFileDelete}
+                disabled={isDeletingFile}
+              >
+                {isDeletingFile ? <div className="spinner"></div> : "Delete File"}
               </button>
             </footer>
           </div>

@@ -313,6 +313,7 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 14px;
+  margin-bottom: 20px;
 }
 
 .dropzone:hover, .dropzone.active {
@@ -735,23 +736,65 @@ body {
 }
 
 .drive-table td {
-  padding: 16px;
+  padding: 14px 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   vertical-align: middle;
 }
 
-.drive-table tr {
+.drive-file-row {
   transition: background 0.2s;
 }
 
-.drive-table tr:hover {
-  background: rgba(255, 255, 255, 0.01);
+.drive-file-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.drive-file-main-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.drive-file-icon-badge {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.drive-file-text-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.drive-file-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+  white-space: nowrap;
+}
+
+.drive-mobile-meta {
+  display: none;
+}
+
+.drive-col-size,
+.drive-col-date {
+  color: var(--text-muted);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .action-buttons-cell {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+  align-items: center;
+  white-space: nowrap;
 }
 
 .btn-icon {
@@ -766,6 +809,7 @@ body {
   justify-content: center;
   cursor: pointer;
   transition: all 0.2s;
+  flex-shrink: 0;
 }
 
 .btn-icon:hover {
@@ -1374,6 +1418,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
   margin-bottom: 20px;
   gap: 12px;
 }
@@ -1401,33 +1446,28 @@ body {
   display: flex;
   gap: 10px;
   align-items: center;
-}
-
-.new-folder-form {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.new-folder-input {
-  padding: 8px 12px;
-  font-size: 13px;
-  width: 160px;
-}
-
-.new-folder-actions {
-  display: flex;
-  gap: 6px;
-}
-
-.new-folder-btn {
-  width: auto !important;
-  padding: 8px 14px !important;
-  font-size: 13px !important;
+  flex-wrap: nowrap;
 }
 
 .drive-action-btn {
   padding: 10px 18px;
+  white-space: nowrap !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.drive-btn-text {
+  white-space: nowrap;
+}
+
+.drive-search-group {
+  margin-bottom: 20px;
 }
 
 .desktop-drop-text {
@@ -1705,7 +1745,7 @@ body {
   .drive-header-bar {
     flex-direction: column;
     align-items: stretch !important;
-    gap: 10px;
+    gap: 12px;
     margin-bottom: 16px;
   }
 
@@ -1720,36 +1760,17 @@ body {
     width: 100%;
     display: flex;
     gap: 8px;
+    align-items: center;
   }
 
   .drive-action-btn {
-    flex: 1;
+    flex: 1 1 0;
+    min-width: 0;
     justify-content: center;
     min-height: 42px;
     padding: 8px 12px !important;
     font-size: 13px !important;
-  }
-
-  .new-folder-form {
-    flex-direction: column;
-    width: 100%;
-    gap: 8px;
-  }
-
-  .new-folder-input {
-    width: 100% !important;
-    font-size: 16px !important;
-  }
-
-  .new-folder-actions {
-    width: 100%;
-    display: flex;
-    gap: 8px;
-  }
-
-  .new-folder-actions button {
-    flex: 1;
-    justify-content: center;
+    white-space: nowrap !important;
   }
 
   .desktop-drop-text {
@@ -1761,18 +1782,42 @@ body {
   }
 
   .dropzone {
-    padding: 18px 12px !important;
+    padding: 18px 14px !important;
     cursor: pointer;
+    margin-bottom: 16px !important;
+  }
+
+  .drive-search-group {
+    margin-bottom: 16px !important;
   }
 
   .folder-grid {
-    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
     gap: 8px;
     margin-bottom: 16px;
   }
 
   .folder-card {
     padding: 10px 12px;
+    min-width: 0;
+  }
+
+  .folder-info {
+    min-width: 0;
+    flex: 1;
+    gap: 8px;
+  }
+
+  .folder-name {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .folder-delete-btn {
+    flex-shrink: 0;
   }
 
   /* Form inputs: font-size 16px to prevent iOS auto-zoom */
@@ -1780,12 +1825,16 @@ body {
     font-size: 16px;
   }
 
-  /* Transform Drive file table into responsive cards on tablets and phones */
-  .drive-table,
-  .drive-table tbody,
-  .drive-table tr,
-  .drive-table td {
-    display: block;
+  /* Transform Drive file table into sleek horizontal responsive cards where buttons stay on the same line */
+  .drive-table-wrapper {
+    margin-top: 8px;
+    overflow-x: visible;
+  }
+
+  .drive-table {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
     width: 100%;
   }
 
@@ -1793,36 +1842,109 @@ body {
     display: none;
   }
 
-  .drive-table tr {
+  .drive-table tbody {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .drive-file-row {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
     background: rgba(255, 255, 255, 0.02);
     border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 14px;
-    margin-bottom: 10px;
-    padding: 12px 14px;
-    transition: background 0.2s;
+    border-radius: 12px;
+    padding: 10px 12px !important;
+    margin-bottom: 0 !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    gap: 10px;
+    width: 100%;
+    box-sizing: border-box;
   }
 
-  .drive-table tr:active {
-    background: rgba(255, 255, 255, 0.05);
+  .drive-file-row:hover,
+  .drive-file-row:active {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.09);
   }
 
-  .drive-table td {
-    padding: 3px 0;
-    border-bottom: none;
+  .drive-col-name {
+    display: flex !important;
+    align-items: center !important;
+    padding: 0 !important;
+    border-bottom: none !important;
+    min-width: 0 !important;
+    flex: 1 1 auto !important;
+  }
+
+  .drive-col-size,
+  .drive-col-date {
+    display: none !important;
+  }
+
+  .drive-file-main-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .drive-file-icon-badge {
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .drive-file-text-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .drive-file-name {
+    font-size: 13.5px;
+    font-weight: 600;
+    max-width: 100% !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
+    color: #f1f5f9;
+  }
+
+  .drive-mobile-meta {
+    display: block !important;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .action-buttons-cell {
-    justify-content: flex-start;
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid rgba(255, 255, 255, 0.04);
-    gap: 8px;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: flex-end !important;
+    flex-shrink: 0 !important;
+    gap: 6px !important;
+    margin-top: 0 !important;
+    padding: 0 !important;
+    border-top: none !important;
+    white-space: nowrap !important;
   }
 
   .btn-icon {
-    width: 38px;
-    height: 38px;
-    border-radius: 10px;
+    width: 32px !important;
+    height: 32px !important;
+    border-radius: 8px !important;
+    flex-shrink: 0 !important;
   }
 
   /* Chat Component Mobile Experience */
@@ -1985,6 +2107,31 @@ body {
 
   .chat-bubble {
     max-width: 90%;
+  }
+
+  .folder-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 6px !important;
+  }
+
+  .folder-card {
+    padding: 8px 10px !important;
+  }
+
+  .drive-action-btn {
+    font-size: 12px !important;
+    padding: 8px 8px !important;
+    gap: 5px !important;
+  }
+
+  .btn-icon {
+    width: 29px !important;
+    height: 29px !important;
+    border-radius: 7px !important;
+  }
+
+  .action-buttons-cell {
+    gap: 4px !important;
   }
 }
 
