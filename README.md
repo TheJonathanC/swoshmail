@@ -19,7 +19,7 @@ A unified, glassmorphic dark-mode productivity dashboard integrating an email cl
   - *Upload Flat*: Uploads all files directly into the current directory.
 - **Smart Duplicate Conflict Resolution**: Detects name collisions upon upload and offers a clean modal to either **Replace** the existing file or **Keep Both (1)** with automatic numbered suffixing.
 - **Inline Previews**: Built-in file previewer for images (PNG, JPG, SVG, WebP, GIF) and code/text documents (TXT, MD, JSON, JS, TS, CSS, HTML, CSV, LOG).
-- **Quota Management**: Real-time storage quota tracking (1 GB personal tier) with client and server enforcement.
+- **Quota Management**: Real-time storage quota tracking with client and server enforcement.
 - **Directory Hierarchy**: Create multi-level folders with breadcrumb trail navigation and cascading folder deletion.
 
 ### 💬 Swosh Chat (Real-Time Messaging)
