@@ -2173,10 +2173,19 @@ body {
     padding: 8px 10px !important;
   }
 
+  .drive-actions-group {
+    flex-wrap: wrap !important;
+  }
+
   .drive-action-btn {
     font-size: 12px !important;
     padding: 8px 8px !important;
     gap: 5px !important;
+    flex: 1 1 calc(50% - 4px) !important;
+  }
+
+  .drive-action-btn:last-child {
+    flex: 1 1 100% !important;
   }
 
   .btn-icon {

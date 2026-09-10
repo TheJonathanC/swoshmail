@@ -6,7 +6,7 @@ import dynamic from "next/dynamic";
 import { 
   FolderIcon, FileIcon, CloudIcon, TrashIcon, DownloadIcon, EyeIcon, 
   MailIcon, UploadIcon, ChevronRightIcon, SearchIcon, PaperclipIcon, PlusIcon, MessageIcon, CheckIcon, CloseIcon,
-  AlertCircleIcon, LockIcon
+  AlertCircleIcon, LockIcon, RefreshCwIcon, FilesIcon
 } from "@/components/Icons";
 
 const ChatPanel = dynamic(() => import("@/components/ChatPanel"), { ssr: false });
@@ -75,6 +75,10 @@ export default function Home() {
   const [isDriveUploading, setIsDriveUploading] = useState(false);
   const [driveUploadProgress, setDriveUploadProgress] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
+  const [uploadQueueCount, setUploadQueueCount] = useState(0);
+  const [uploadQueueDone, setUploadQueueDone] = useState(0);
+  const [folderUploadPending, setFolderUploadPending] = useState<{ files: File[]; folderName: string } | null>(null);
+  const [duplicateConflict, setDuplicateConflict] = useState<{ file: File; existingFile: FileItem; remainingQueue: File[]; targetFolderId: string } | null>(null);
 
   // Folder creation and deletion state
   const [newFolderName, setNewFolderName] = useState("");
@@ -96,6 +100,7 @@ export default function Home() {
   // Refs
   const mailFileInputRef = useRef<HTMLInputElement>(null);
   const driveFileInputRef = useRef<HTMLInputElement>(null);
+  const driveFolderInputRef = useRef<HTMLInputElement>(null);
 
   // Update document title based on active module
   useEffect(() => {
@@ -251,21 +256,213 @@ export default function Home() {
     }
   };
 
+  // --- Multi-file & folder upload handlers ---
+
   const handleDriveFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const filesList = e.target.files;
-    if (filesList && filesList.length > 0) uploadFileToDrive(filesList[0]);
+    if (!filesList || filesList.length === 0) return;
+    const files = Array.from(filesList);
+    startUploadQueue(files, currentFolderId);
+    if (driveFileInputRef.current) driveFileInputRef.current.value = "";
   };
 
-  const handleDriveDrop = (e: React.DragEvent) => {
+  const handleDriveFolderUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const filesList = e.target.files;
+    if (!filesList || filesList.length === 0) return;
+    const files = Array.from(filesList);
+    // Detect folder name from webkitRelativePath (e.g. "MyFolder/file.txt")
+    const firstPath = (files[0] as any).webkitRelativePath || "";
+    const folderName = firstPath.split("/")[0] || "Uploaded Folder";
+    setFolderUploadPending({ files, folderName });
+    if (driveFolderInputRef.current) driveFolderInputRef.current.value = "";
+  };
+
+  const handleFolderUploadChoice = async (createFolder: boolean) => {
+    if (!folderUploadPending) return;
+    const { files, folderName } = folderUploadPending;
+    setFolderUploadPending(null);
+
+    if (createFolder) {
+      // Create the folder first, then upload files into it
+      try {
+        const res = await fetch("/api/drive/folders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: folderName,
+            parentId: currentFolderId === "root" ? null : currentFolderId,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          addToast("success", "Folder Created", `Folder "${folderName}" created.`);
+          startUploadQueue(files, data.folder.id);
+          // Navigate to the new folder so user sees files appearing
+          setCurrentFolderId(data.folder.id);
+        } else {
+          const data = await res.json();
+          addToast("danger", "Folder Error", data.error || "Could not create folder.");
+          // Still upload files to current folder as fallback
+          startUploadQueue(files, currentFolderId);
+        }
+      } catch {
+        addToast("danger", "Error", "Network error creating folder.");
+        startUploadQueue(files, currentFolderId);
+      }
+    } else {
+      // Upload files flat into current folder
+      startUploadQueue(files, currentFolderId);
+    }
+  };
+
+  const handleDriveDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
+
+    // Try to detect folder entries via DataTransfer API
+    const items = e.dataTransfer.items;
+    if (items && items.length > 0) {
+      const entries: FileSystemEntry[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i].webkitGetAsEntry?.();
+        if (entry) entries.push(entry);
+      }
+
+      // Check if any entry is a directory
+      const dirEntry = entries.find((e) => e.isDirectory);
+      if (dirEntry) {
+        // Read all files from the directory recursively
+        const folderFiles = await readDirectoryFiles(dirEntry as FileSystemDirectoryEntry);
+        if (folderFiles.length > 0) {
+          setFolderUploadPending({ files: folderFiles, folderName: dirEntry.name });
+          return;
+        }
+      }
+    }
+
+    // Fallback: regular file drop (single or multi)
     const filesList = e.dataTransfer.files;
-    if (filesList && filesList.length > 0) uploadFileToDrive(filesList[0]);
+    if (filesList && filesList.length > 0) {
+      startUploadQueue(Array.from(filesList), currentFolderId);
+    }
   };
 
-  const uploadFileToDrive = (file: File) => {
-    if (totalUsed + file.size > ONE_GB) {
-      addToast("danger", "Quota Exceeded", "This file exceeds your 1 GB drive storage limit.");
+  // Recursively read all files from a FileSystemDirectoryEntry
+  const readDirectoryFiles = (dirEntry: FileSystemDirectoryEntry): Promise<File[]> => {
+    return new Promise((resolve) => {
+      const allFiles: File[] = [];
+      const reader = dirEntry.createReader();
+      const readEntries = () => {
+        reader.readEntries(async (entries) => {
+          if (entries.length === 0) {
+            resolve(allFiles);
+            return;
+          }
+          for (const entry of entries) {
+            if (entry.isFile) {
+              const file = await new Promise<File>((res) => (entry as FileSystemFileEntry).file(res));
+              allFiles.push(file);
+            } else if (entry.isDirectory) {
+              const subFiles = await readDirectoryFiles(entry as FileSystemDirectoryEntry);
+              allFiles.push(...subFiles);
+            }
+          }
+          readEntries(); // Continue reading (batched results)
+        });
+      };
+      readEntries();
+    });
+  };
+
+  // Start processing an upload queue
+  const startUploadQueue = (files: File[], targetFolderId: string) => {
+    if (files.length === 0) return;
+    setUploadQueueCount(files.length);
+    setUploadQueueDone(0);
+    processNextUpload(files, 0, targetFolderId);
+  };
+
+  // Process files one by one from the queue
+  const processNextUpload = (queue: File[], index: number, targetFolderId: string) => {
+    if (index >= queue.length) {
+      // All done
+      setIsDriveUploading(false);
+      setUploadQueueCount(0);
+      setUploadQueueDone(0);
+      fetchDriveFiles();
+      return;
+    }
+
+    const file = queue[index];
+
+    // Check for duplicates in the current folder's files
+    const existingDup = driveFiles.find(
+      (f) => f.name === file.name && (
+        (targetFolderId === "root" && f.folder_id === null) ||
+        f.folder_id === targetFolderId
+      )
+    );
+
+    if (existingDup) {
+      // Show duplicate conflict modal, pause queue
+      setDuplicateConflict({
+        file,
+        existingFile: existingDup,
+        remainingQueue: queue,
+        targetFolderId,
+      });
+      return; // paused until user decides
+    }
+
+    // No duplicate - upload directly
+    uploadSingleFile(file, targetFolderId, null, queue, index);
+  };
+
+  // Handle user's choice on a duplicate conflict
+  const handleDuplicateChoice = (action: "replace" | "rename" | "skip") => {
+    if (!duplicateConflict) return;
+    const { file, existingFile, remainingQueue, targetFolderId } = duplicateConflict;
+    setDuplicateConflict(null);
+
+    const nextIndex = remainingQueue.indexOf(file) + 1;
+
+    if (action === "skip") {
+      setUploadQueueDone((prev) => prev + 1);
+      processNextUpload(remainingQueue, nextIndex, targetFolderId);
+    } else if (action === "replace") {
+      uploadSingleFile(file, targetFolderId, existingFile.id, remainingQueue, remainingQueue.indexOf(file));
+    } else if (action === "rename") {
+      // Rename the file by appending (1), (2), etc.
+      const ext = file.name.includes(".") ? "." + file.name.split(".").pop() : "";
+      const baseName = ext ? file.name.slice(0, -(ext.length)) : file.name;
+      let counter = 1;
+      let newName = `${baseName} (${counter})${ext}`;
+      // Check against existing files to find a unique name
+      while (driveFiles.some((f) => f.name === newName && (
+        (targetFolderId === "root" && f.folder_id === null) || f.folder_id === targetFolderId
+      ))) {
+        counter++;
+        newName = `${baseName} (${counter})${ext}`;
+      }
+      // Create a renamed File object
+      const renamedFile = new File([file], newName, { type: file.type, lastModified: file.lastModified });
+      uploadSingleFile(renamedFile, targetFolderId, null, remainingQueue, remainingQueue.indexOf(file));
+    }
+  };
+
+  // Upload a single file to the drive with XHR for progress tracking
+  const uploadSingleFile = (
+    file: File,
+    targetFolderId: string,
+    replaceFileId: string | null,
+    queue: File[],
+    currentIndex: number
+  ) => {
+    const totalBytes = queue.reduce((sum, f) => sum + f.size, 0);
+    if (!replaceFileId && totalUsed + file.size > ONE_GB) {
+      addToast("danger", "Quota Exceeded", `"${file.name}" exceeds your 1 GB drive storage limit.`);
+      setUploadQueueDone((prev) => prev + 1);
+      processNextUpload(queue, currentIndex + 1, targetFolderId);
       return;
     }
 
@@ -274,7 +471,8 @@ export default function Home() {
 
     const formData = new FormData();
     formData.append("file", file);
-    if (currentFolderId !== "root") formData.append("folderId", currentFolderId);
+    if (targetFolderId !== "root") formData.append("folderId", targetFolderId);
+    if (replaceFileId) formData.append("replaceFileId", replaceFileId);
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/drive");
@@ -282,23 +480,32 @@ export default function Home() {
       if (event.lengthComputable) setDriveUploadProgress(Math.round((event.loaded / event.total) * 100));
     };
     xhr.onload = () => {
-      setIsDriveUploading(false);
       try {
         const data = JSON.parse(xhr.responseText);
         if (xhr.status === 200 && data.success) {
-          addToast("success", "Uploaded", `${file.name} saved to Swosh Drive.`);
-          fetchDriveFiles();
-          if (driveFileInputRef.current) driveFileInputRef.current.value = "";
+          const verb = data.replaced ? "Replaced" : "Uploaded";
+          addToast("success", verb, `${file.name} saved to Swosh Drive.`);
+          if (data.file) {
+            setDriveFiles((prev) => {
+              if (data.replaced) {
+                return prev.map((f) => (f.id === data.file.id ? data.file : f));
+              }
+              return [data.file, ...prev.filter((f) => f.id !== data.file.id)];
+            });
+          }
         } else {
-          addToast("danger", "Upload Failed", data.error || "Could not save file.");
+          addToast("danger", "Upload Failed", data.error || `Could not save ${file.name}.`);
         }
       } catch (err) {
         addToast("danger", "Upload Error", "Server returned an invalid response.");
       }
+      setUploadQueueDone((prev) => prev + 1);
+      processNextUpload(queue, currentIndex + 1, targetFolderId);
     };
     xhr.onerror = () => {
-      setIsDriveUploading(false);
-      addToast("danger", "Network Error", "Unable to connect to the server.");
+      addToast("danger", "Network Error", `Failed to upload ${file.name}.`);
+      setUploadQueueDone((prev) => prev + 1);
+      processNextUpload(queue, currentIndex + 1, targetFolderId);
     };
     xhr.send(formData);
   };
@@ -803,23 +1010,42 @@ export default function Home() {
 
                 <button
                   type="button"
+                  className="btn-secondary drive-action-btn"
+                  onClick={() => driveFolderInputRef.current?.click()}
+                  disabled={isDriveUploading}
+                >
+                  <FolderIcon size={16} /> <span className="drive-btn-text">Upload Folder</span>
+                </button>
+
+                <button
+                  type="button"
                   className="btn-primary drive-action-btn"
                   onClick={() => driveFileInputRef.current?.click()}
                   disabled={isDriveUploading}
                 >
                   {isDriveUploading ? (
-                    "Uploading..."
+                    uploadQueueCount > 1
+                      ? `Uploading ${uploadQueueDone + 1}/${uploadQueueCount}...`
+                      : "Uploading..."
                   ) : (
                     <>
-                      <UploadIcon size={16} /> <span className="drive-btn-text">Upload File</span>
+                      <UploadIcon size={16} /> <span className="drive-btn-text">Upload Files</span>
                     </>
                   )}
                 </button>
                 <input
                   type="file"
+                  multiple
                   ref={driveFileInputRef}
                   onChange={handleDriveFileUpload}
                   style={{ display: "none" }}
+                />
+                <input
+                  type="file"
+                  ref={driveFolderInputRef}
+                  onChange={handleDriveFolderUpload}
+                  style={{ display: "none" }}
+                  {...({ webkitdirectory: "", directory: "" } as any)}
                 />
               </div>
             </div>
@@ -855,15 +1081,19 @@ export default function Home() {
             >
               <div className="dropzone-icon" style={{ color: "var(--primary)" }}><CloudIcon size={36} /></div>
               <div className="dropzone-title">
-                <span className="desktop-drop-text">Drag files here to upload directly to this directory</span>
-                <span className="mobile-drop-text">Tap or drop files to upload</span>
+                <span className="desktop-drop-text">Drag files or a folder here to upload directly to this directory</span>
+                <span className="mobile-drop-text">Tap or drop files / folder to upload</span>
               </div>
             </div>
 
             {isDriveUploading && (
               <div className="progress-container" style={{ marginTop: "12px", marginBottom: "20px" }}>
                 <div className="progress-label">
-                  <span>Uploading file to Cloudflare R2...</span>
+                  <span>
+                    {uploadQueueCount > 1
+                      ? `Uploading file ${Math.min(uploadQueueDone + 1, uploadQueueCount)} of ${uploadQueueCount}...`
+                      : "Uploading file to Cloudflare R2..."}
+                  </span>
                   <span>{driveUploadProgress}%</span>
                 </div>
                 <div className="progress-bar-wrapper">
@@ -1191,6 +1421,227 @@ export default function Home() {
                 disabled={isDeletingFile}
               >
                 {isDeletingFile ? <div className="spinner"></div> : "Delete File"}
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Folder Upload Decision */}
+      {folderUploadPending && (
+        <div className="modal-overlay" onClick={() => setFolderUploadPending(null)}>
+          <div className="modal-content glass-panel" style={{ maxWidth: "460px" }} onClick={(e) => e.stopPropagation()}>
+            <header className="modal-header">
+              <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--foreground)" }}>
+                <span className="folder-icon" style={{ display: "inline-flex" }}><FolderIcon size={20} /></span> Upload Folder
+              </h3>
+              <button
+                type="button"
+                className="btn-remove"
+                style={{ padding: "6px" }}
+                onClick={() => setFolderUploadPending(null)}
+                title="Cancel"
+                aria-label="Cancel folder upload"
+              >
+                <CloseIcon size={16} />
+              </button>
+            </header>
+            <div className="modal-body" style={{ padding: "16px 0 20px 0" }}>
+              <p style={{ marginBottom: "12px", fontSize: "14px", lineHeight: 1.5 }}>
+                You selected folder <strong>&ldquo;{folderUploadPending.folderName}&rdquo;</strong> containing{" "}
+                <strong>{folderUploadPending.files.length}</strong> file{folderUploadPending.files.length === 1 ? "" : "s"} ({formatBytes(folderUploadPending.files.reduce((a, b) => a + b.size, 0))}).
+              </p>
+              <p style={{ fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.5, marginBottom: "16px" }}>
+                How would you like to upload these files?
+              </p>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{
+                    padding: "12px 14px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    textAlign: "left",
+                    borderRadius: "10px",
+                    border: "1px solid rgba(99, 102, 241, 0.3)",
+                    background: "rgba(99, 102, 241, 0.08)",
+                  }}
+                  onClick={() => handleFolderUploadChoice(true)}
+                >
+                  <span style={{ color: "var(--primary)", display: "inline-flex", flexShrink: 0 }}><FolderIcon size={20} /></span>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: "13.5px", color: "#fff" }}>
+                      Create new folder &ldquo;{folderUploadPending.folderName}&rdquo;
+                    </div>
+                    <div style={{ fontSize: "11.5px", color: "var(--text-muted)", marginTop: "2px" }}>
+                      Creates a folder with this name and places all files inside it
+                    </div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{
+                    padding: "12px 14px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    textAlign: "left",
+                    borderRadius: "10px",
+                  }}
+                  onClick={() => handleFolderUploadChoice(false)}
+                >
+                  <span style={{ color: "var(--text-muted)", display: "inline-flex", flexShrink: 0 }}><FilesIcon size={20} /></span>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: "13.5px", color: "#fff" }}>
+                      Upload files directly here
+                    </div>
+                    <div style={{ fontSize: "11.5px", color: "var(--text-muted)", marginTop: "2px" }}>
+                      Uploads all files flat into current directory ({currentFolderId === "root" ? "Root" : breadcrumbs[breadcrumbs.length - 1]?.name || "current folder"})
+                    </div>
+                  </div>
+                </button>
+              </div>
+            </div>
+            <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "15px" }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: "8px 16px" }}
+                onClick={() => setFolderUploadPending(null)}
+              >
+                Cancel
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Duplicate File Conflict */}
+      {duplicateConflict && (
+        <div className="modal-overlay">
+          <div className="modal-content glass-panel" style={{ maxWidth: "460px" }} onClick={(e) => e.stopPropagation()}>
+            <header className="modal-header">
+              <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "#f59e0b" }}>
+                <RefreshCwIcon size={20} /> File Already Exists
+              </h3>
+              <button
+                type="button"
+                className="btn-remove"
+                style={{ padding: "6px" }}
+                onClick={() => {
+                  setDuplicateConflict(null);
+                  setIsDriveUploading(false);
+                  setUploadQueueCount(0);
+                  setUploadQueueDone(0);
+                  fetchDriveFiles();
+                }}
+                title="Cancel upload"
+                aria-label="Cancel upload"
+              >
+                <CloseIcon size={16} />
+              </button>
+            </header>
+            <div className="modal-body" style={{ padding: "16px 0 20px 0" }}>
+              <p style={{ marginBottom: "12px", fontSize: "14px", lineHeight: 1.5 }}>
+                A file named <strong>&ldquo;{duplicateConflict.file.name}&rdquo;</strong> already exists in this folder.
+              </p>
+
+              <div style={{ background: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.06)", borderRadius: "10px", padding: "12px", marginBottom: "16px", fontSize: "12.5px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                  <span style={{ color: "var(--text-muted)" }}>Existing File:</span>
+                  <span>{formatBytes(parseInt(duplicateConflict.existingFile.size))} &bull; {new Date(duplicateConflict.existingFile.uploaded_at).toLocaleDateString()}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ color: "var(--text-muted)" }}>New Upload:</span>
+                  <span style={{ color: "var(--primary)", fontWeight: 600 }}>{formatBytes(duplicateConflict.file.size)}</span>
+                </div>
+              </div>
+
+              <p style={{ fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.5, marginBottom: "16px" }}>
+                Would you like to replace the existing file or append (1) to keep both?
+              </p>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{
+                    padding: "12px 14px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    textAlign: "left",
+                    borderRadius: "10px",
+                    border: "1px solid rgba(239, 68, 68, 0.3)",
+                    background: "rgba(239, 68, 68, 0.08)",
+                  }}
+                  onClick={() => handleDuplicateChoice("replace")}
+                >
+                  <span style={{ color: "var(--danger)", display: "inline-flex", flexShrink: 0 }}><RefreshCwIcon size={18} /></span>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: "13.5px", color: "#fff" }}>
+                      Replace existing file
+                    </div>
+                    <div style={{ fontSize: "11.5px", color: "var(--text-muted)", marginTop: "2px" }}>
+                      Overwrites the old file in cloud storage with the new file
+                    </div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{
+                    padding: "12px 14px",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    textAlign: "left",
+                    borderRadius: "10px",
+                    border: "1px solid rgba(99, 102, 241, 0.3)",
+                    background: "rgba(99, 102, 241, 0.08)",
+                  }}
+                  onClick={() => handleDuplicateChoice("rename")}
+                >
+                  <span style={{ color: "var(--primary)", display: "inline-flex", flexShrink: 0 }}><FilesIcon size={18} /></span>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: "13.5px", color: "#fff" }}>
+                      Append (1) / Keep both files
+                    </div>
+                    <div style={{ fontSize: "11.5px", color: "var(--text-muted)", marginTop: "2px" }}>
+                      Saves new file with a numbered suffix (e.g. &ldquo;{duplicateConflict.file.name.includes(".") ? duplicateConflict.file.name.replace(/(\.[^.]+)$/, " (1)$1") : duplicateConflict.file.name + " (1)"}&rdquo;)
+                    </div>
+                  </div>
+                </button>
+              </div>
+            </div>
+            <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "15px", display: "flex", justifyContent: "space-between" }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: "8px 14px" }}
+                onClick={() => handleDuplicateChoice("skip")}
+              >
+                Skip This File
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: "8px 14px", color: "var(--danger)" }}
+                onClick={() => {
+                  setDuplicateConflict(null);
+                  setIsDriveUploading(false);
+                  setUploadQueueCount(0);
+                  setUploadQueueDone(0);
+                  fetchDriveFiles();
+                }}
+              >
+                Cancel Remaining
               </button>
             </footer>
           </div>

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
-import { uploadToR2 } from "@/lib/r2";
+import { uploadToR2, deleteFromR2 } from "@/lib/r2";
 import { checkRateLimit } from "@/lib/rate-limit";
 
 const ONE_GB = 1024 * 1024 * 1024; // 1 GB in bytes
@@ -123,8 +123,8 @@ export async function POST(request: Request) {
     }
     const userId = (session.user as any).id;
 
-    // Rate Limit: 20 uploads per minute per user
-    const rl = checkRateLimit(`drive_upload_${userId}`, 20, 60000);
+    // Rate Limit: 60 uploads per minute per user (supports multi-file & folder uploads)
+    const rl = checkRateLimit(`drive_upload_${userId}`, 60, 60000);
     if (!rl.success) {
       return NextResponse.json({ error: "Rate limit exceeded. Too many file uploads." }, { status: 429 });
     }
@@ -133,6 +133,7 @@ export async function POST(request: Request) {
     const file = formData.get("file") as File | null;
     const folderId = formData.get("folderId") as string | null;
     const activeFolderId = !folderId || folderId === "root" ? null : folderId;
+    const replaceFileId = formData.get("replaceFileId") as string | null;
 
     if (!file) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 });
@@ -150,12 +151,73 @@ export async function POST(request: Request) {
 
     const totalUsed = existingFiles.reduce((acc, f) => acc + parseInt(f.size), 0);
 
-    // 2. Check quota restriction (1 GB)
-    if (totalUsed + file.size > ONE_GB) {
+    // 2. Check quota restriction (1 GB) for new uploads (replacement checks net delta below)
+    if (!replaceFileId && totalUsed + file.size > ONE_GB) {
       return NextResponse.json(
         { error: `Storage quota exceeded. Your current limit is 1 GB. Used: ${(totalUsed / 1024 / 1024).toFixed(1)}MB.` },
         { status: 400 }
       );
+    }
+
+    // 2b. Handle file replacement if replaceFileId is provided
+    if (replaceFileId) {
+      // Fetch existing file record and verify ownership
+      const { data: existingFile, error: existingError } = await supabase
+        .from("files")
+        .select("*")
+        .eq("id", replaceFileId)
+        .eq("owner_id", userId)
+        .single();
+
+      if (existingError || !existingFile) {
+        return NextResponse.json(
+          { error: "File not found or access denied" },
+          { status: 403 }
+        );
+      }
+
+      // Delete old file from R2 (non-fatal if it fails)
+      try {
+        await deleteFromR2(existingFile.key);
+      } catch (e) {
+        console.error("Failed to delete old R2 object:", e);
+      }
+
+      // Re-check quota with adjusted size (subtract old file, add new file)
+      if (totalUsed - parseInt(existingFile.size) + file.size > ONE_GB) {
+        return NextResponse.json(
+          { error: `Storage quota exceeded. Your current limit is 1 GB. Used: ${(totalUsed / 1024 / 1024).toFixed(1)}MB.` },
+          { status: 400 }
+        );
+      }
+
+      // Upload new file to R2
+      const fileKey = `drives/${userId}/${Date.now()}-${file.name}`;
+      const arrayBuffer = await file.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      await uploadToR2(fileKey, buffer, file.type || "application/octet-stream");
+
+      // Update existing record in Supabase
+      const downloadUrl = `/api/drive/download?key=${encodeURIComponent(fileKey)}`;
+      const { data: updatedFile, error: updateError } = await supabase
+        .from("files")
+        .update({
+          name: file.name,
+          size: file.size,
+          key: fileKey,
+          url: downloadUrl,
+          uploaded_at: new Date().toISOString(),
+        })
+        .eq("id", replaceFileId)
+        .eq("owner_id", userId)
+        .select()
+        .single();
+
+      if (updateError) {
+        return NextResponse.json({ error: "Failed to update file metadata" }, { status: 500 });
+      }
+
+      return NextResponse.json({ success: true, file: updatedFile, replaced: true });
     }
 
     // 3. Upload file to Cloudflare R2

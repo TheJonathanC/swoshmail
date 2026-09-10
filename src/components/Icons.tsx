@@ -155,3 +155,21 @@ export const MoreVerticalIcon = ({ size = 18, className = "" }) => (
     <circle cx="12" cy="19" r="1"></circle>
   </svg>
 );
+
+export const RefreshCwIcon = ({ size = 18, className = "" }) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="23 4 23 10 17 10"></polyline>
+    <polyline points="1 20 1 14 7 14"></polyline>
+    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+  </svg>
+);
+
+export const FilesIcon = ({ size = 18, className = "" }) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"></path>
+    <path d="M14 2v4a2 2 0 0 0 2 2h4"></path>
+    <path d="M10 9H8"></path>
+    <path d="M16 13H8"></path>
+    <path d="M16 17H8"></path>
+  </svg>
+);
