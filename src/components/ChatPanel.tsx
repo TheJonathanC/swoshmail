@@ -1,14 +1,16 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createClient } from "@supabase/supabase-js";
-import { MessageIcon, SendIcon, TrashIcon, EditIcon } from "./Icons";
+import { MessageIcon, SendIcon, TrashIcon, EditIcon, ChevronLeftIcon } from "./Icons";
 
-// Supabase public client for Realtime (uses anon key, not service role)
-const supabaseRealtime = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+// Supabase public client for Realtime (uses anon key, guarded against missing env vars)
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+
+const supabaseRealtime = (supabaseUrl && supabaseAnonKey)
+  ? createClient(supabaseUrl, supabaseAnonKey)
+  : null;
 
 interface Conversation {
   id: string;
@@ -37,7 +39,6 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [messageToDelete, setMessageToDelete] = useState<string | null>(null);
   const [newChatUsername, setNewChatUsername] = useState("");
-  const [saveMessages, setSaveMessages] = useState(false);
   const [newChatError, setNewChatError] = useState("");
   const [isStartingChat, setIsStartingChat] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -47,6 +48,19 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelRef = useRef<any>(null);
   const presenceChannelRef = useRef<any>(null);
+
+  // Declare fetchConversations before useEffect (satisfies React Compiler / linter)
+  const fetchConversations = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chat/conversations");
+      if (res.ok) {
+        const data = await res.json();
+        setConversations(data.conversations || []);
+      }
+    } catch (err) {
+      console.error("Failed to load conversations:", err);
+    }
+  }, []);
 
   // Scroll to bottom whenever messages change
   useEffect(() => {
@@ -58,7 +72,6 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
     const handleVisibilityChange = () => {
       if (!document.hidden) {
         setUnreadCount(0);
-        document.title = "Swosh Chat";
       }
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -74,6 +87,8 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
 
   // Join global presence channel to track who's online
   useEffect(() => {
+    if (!supabaseRealtime) return;
+
     const presenceCh = supabaseRealtime.channel("swoshchat:presence", {
       config: { presence: { key: userId } },
     });
@@ -91,42 +106,52 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
       });
 
     presenceChannelRef.current = presenceCh;
-    return () => { supabaseRealtime.removeChannel(presenceCh); };
+    return () => {
+      if (supabaseRealtime) {
+        supabaseRealtime.removeChannel(presenceCh);
+      }
+    };
   }, [userId, username]);
 
   // Fetch conversations on mount
   useEffect(() => {
-    fetchConversations();
-  }, []);
+    let active = true;
+    fetch("/api/chat/conversations")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data) {
+          setConversations(data.conversations || []);
+        }
+      })
+      .catch((err) => console.error("Failed to load conversations:", err));
 
-  const fetchConversations = async () => {
-    const res = await fetch("/api/chat/conversations");
-    if (res.ok) {
-      const data = await res.json();
-      setConversations(data.conversations || []);
-    }
-  };
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Subscribe to a conversation's Realtime channel
   const subscribeToConversation = useCallback((conv: Conversation) => {
+    if (!supabaseRealtime) return;
+
     if (channelRef.current) {
       supabaseRealtime.removeChannel(channelRef.current);
     }
 
     const ch = supabaseRealtime.channel(`swoshchat:conv:${conv.id}`);
 
-    ch.on("broadcast", { event: "settings" }, ({ payload }: any) => {
+    ch.on("broadcast", { event: "settings" }, ({ payload }: { payload: { save_messages?: boolean } }) => {
       if (payload.save_messages !== undefined) {
         setConversations((prev) =>
-          prev.map((c) => (c.id === conv.id ? { ...c, save_messages: payload.save_messages } : c))
+          prev.map((c) => (c.id === conv.id ? { ...c, save_messages: payload.save_messages! } : c))
         );
         setActiveConv((prev) =>
-          prev && prev.id === conv.id ? { ...prev, save_messages: payload.save_messages } : prev
+          prev && prev.id === conv.id ? { ...prev, save_messages: payload.save_messages! } : prev
         );
       }
     });
 
-    ch.on("broadcast", { event: "message" }, ({ payload }: any) => {
+    ch.on("broadcast", { event: "message" }, ({ payload }: { payload: Message }) => {
       const incoming: Message = payload;
       
       // If document is hidden, increment unread count for the title notification
@@ -144,8 +169,9 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
         incoming.sender_id !== userId &&
         incoming.content.trim().toLowerCase() === "ping"
       ) {
+        const pongLocalId = `pong-${Date.now()}`;
         const pong: Message = {
-          id: `pong-${Date.now()}`,
+          id: pongLocalId,
           sender_id: userId,
           content: "pong",
           created_at: new Date().toISOString(),
@@ -153,27 +179,49 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
         };
         setMessages((prev) => [...prev, pong]);
         ch.send({ type: "broadcast", event: "message", payload: pong });
-        // Always persist to DB (API handles Snapchat deletion logic)
+
         fetch("/api/chat/messages", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ conversationId: conv.id, content: "pong" }),
-        });
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            if (data.message?.id) {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === pongLocalId ? { ...data.message, local: m.local } : m))
+              );
+              ch.send({
+                type: "broadcast",
+                event: "sync_id",
+                payload: { tempId: pongLocalId, realId: data.message.id },
+              });
+            }
+          })
+          .catch((err) => console.error("Auto-pong persist failed:", err));
       }
     });
 
-    ch.on("broadcast", { event: "edit_message" }, ({ payload }: any) => {
+    // Synchronize temporary local message IDs with confirmed database UUIDs
+    ch.on("broadcast", { event: "sync_id" }, ({ payload }: { payload: { tempId: string; realId: string } }) => {
+      if (payload.tempId && payload.realId) {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === payload.tempId ? { ...m, id: payload.realId } : m))
+        );
+      }
+    });
+
+    ch.on("broadcast", { event: "edit_message" }, ({ payload }: { payload: { id: string; content: string } }) => {
       setMessages((prev) =>
         prev.map((m) => (m.id === payload.id ? { ...m, content: payload.content } : m))
       );
     });
 
-    ch.on("broadcast", { event: "delete_message" }, ({ payload }: any) => {
+    ch.on("broadcast", { event: "delete_message" }, ({ payload }: { payload: { id: string } }) => {
       setMessages((prev) => prev.filter((m) => m.id !== payload.id));
     });
 
     ch.subscribe();
-
     channelRef.current = ch;
   }, [userId]);
 
@@ -183,11 +231,14 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
     setMessages([]);
     subscribeToConversation(conv);
 
-    // Always fetch messages (API handles Snapchat deletion logic)
-    const res = await fetch(`/api/chat/messages?conversationId=${conv.id}`, { cache: "no-store" });
-    if (res.ok) {
-      const data = await res.json();
-      setMessages(data.messages || []);
+    try {
+      const res = await fetch(`/api/chat/messages?conversationId=${conv.id}`, { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        setMessages(data.messages || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch messages:", err);
     }
   };
 
@@ -198,48 +249,55 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
     setIsStartingChat(true);
     setNewChatError("");
 
-    const res = await fetch("/api/chat/conversations", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: newChatUsername.trim(), saveMessages: false }), // Default to false (Disappearing Mode)
-    });
+    try {
+      const res = await fetch("/api/chat/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: newChatUsername.trim(), saveMessages: false }),
+      });
 
-    const data = await res.json();
-    setIsStartingChat(false);
+      const data = await res.json();
+      setIsStartingChat(false);
 
-    if (!res.ok) {
-      setNewChatError(data.error || "User not found");
-      return;
+      if (!res.ok) {
+        setNewChatError(data.error || "User not found");
+        return;
+      }
+
+      const conv = data.conversation;
+      setConversations((prev) =>
+        prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]
+      );
+      setNewChatUsername("");
+      openConversation(conv);
+    } catch {
+      setIsStartingChat(false);
+      setNewChatError("Unable to connect to server.");
     }
-
-    const conv = data.conversation;
-    // Add to list if not already there
-    setConversations((prev) =>
-      prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]
-    );
-    setNewChatUsername("");
-    openConversation(conv);
   };
 
-  // Toggle chat settings
+  // Toggle chat settings with optimistic update and rollback
   const handleToggleSave = async () => {
     if (!activeConv) return;
-    const newSaveState = !activeConv.save_messages;
+    const prevSaveState = activeConv.save_messages;
+    const newSaveState = !prevSaveState;
     
-    // Optimistic UI update
     setActiveConv({ ...activeConv, save_messages: newSaveState });
     setConversations((prev) =>
       prev.map((c) => (c.id === activeConv.id ? { ...c, save_messages: newSaveState } : c))
     );
 
     try {
-      await fetch("/api/chat/conversations/toggle", {
+      const res = await fetch("/api/chat/conversations/toggle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId: activeConv.id, saveMessages: newSaveState }),
       });
 
-      // Broadcast to other user so their UI updates immediately
+      if (!res.ok) {
+        throw new Error("Failed to toggle setting on server");
+      }
+
       if (channelRef.current) {
         channelRef.current.send({
           type: "broadcast",
@@ -248,7 +306,11 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
         });
       }
     } catch (err) {
-      console.error("Failed to toggle settings", err);
+      console.error("Failed to toggle settings, rolling back", err);
+      setActiveConv((prev) => (prev ? { ...prev, save_messages: prevSaveState } : prev));
+      setConversations((prev) =>
+        prev.map((c) => (c.id === activeConv.id ? { ...c, save_messages: prevSaveState } : c))
+      );
     }
   };
 
@@ -262,23 +324,30 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
     setIsSending(true);
 
     if (editingMessageId) {
+      const targetId = editingMessageId;
+      setEditingMessageId(null);
+
       // Optimistic edit
-      setMessages((prev) => prev.map((m) => (m.id === editingMessageId ? { ...m, content } : m)));
+      setMessages((prev) => prev.map((m) => (m.id === targetId ? { ...m, content } : m)));
       
-      const payload = { id: editingMessageId, content };
+      const payload = { id: targetId, content };
       await channelRef.current?.send({ type: "broadcast", event: "edit_message", payload });
 
-      if (!editingMessageId.startsWith("local-") && !editingMessageId.startsWith("pong-")) {
-        await fetch("/api/chat/messages", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messageId: editingMessageId, newContent: content }),
-        });
+      if (!targetId.startsWith("local-") && !targetId.startsWith("pong-")) {
+        try {
+          await fetch("/api/chat/messages", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ messageId: targetId, newContent: content }),
+          });
+        } catch (err) {
+          console.error("Failed to persist edit:", err);
+        }
       }
-      setEditingMessageId(null);
     } else {
+      const localId = `local-${Date.now()}`;
       const msg: Message = {
-        id: `local-${Date.now()}`,
+        id: localId,
         sender_id: userId,
         content,
         created_at: new Date().toISOString(),
@@ -286,14 +355,33 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
       };
 
       setMessages((prev) => [...prev, msg]);
-
       await channelRef.current?.send({ type: "broadcast", event: "message", payload: msg });
 
-      await fetch("/api/chat/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: activeConv.id, content }),
-      });
+      try {
+        const res = await fetch("/api/chat/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversationId: activeConv.id, content }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.message?.id) {
+            // Replace local temporary ID with database ID
+            setMessages((prev) =>
+              prev.map((m) => (m.id === localId ? { ...data.message, local: m.local } : m))
+            );
+            // Broadcast the confirmed ID to peer
+            channelRef.current?.send({
+              type: "broadcast",
+              event: "sync_id",
+              payload: { tempId: localId, realId: data.message.id },
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Failed to persist message:", err);
+      }
     }
 
     setIsSending(false);
@@ -314,7 +402,11 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
     await channelRef.current?.send({ type: "broadcast", event: "delete_message", payload: { id: msgId } });
 
     if (!msgId.startsWith("local-") && !msgId.startsWith("pong-")) {
-      await fetch(`/api/chat/messages?messageId=${msgId}`, { method: "DELETE" });
+      try {
+        await fetch(`/api/chat/messages?messageId=${msgId}`, { method: "DELETE" });
+      } catch (err) {
+        console.error("Failed to delete message from DB:", err);
+      }
     }
   };
 
@@ -324,11 +416,11 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
     new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   return (
-    <div className="chat-layout">
+    <div className={`chat-layout ${activeConv ? "chat-active" : "chat-list-view"}`}>
       {/* Left: Conversation List */}
-      <div className="chat-sidebar" style={{ paddingRight: "16px" }}>
+      <div className="chat-sidebar">
         {/* New chat form */}
-        <form onSubmit={handleStartChat} style={{ padding: "0 0 16px 0", borderBottom: "1px solid rgba(255,255,255,0.05)", marginBottom: "16px" }}>
+        <form onSubmit={handleStartChat} className="chat-new-form">
           <label className="form-label" style={{ display: "block", marginBottom: "8px" }}>New Chat</label>
           <div style={{ display: "flex", gap: "6px" }}>
             <input
@@ -341,7 +433,7 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
             <button
               type="submit"
               className="btn-primary"
-              style={{ width: "auto", padding: "8px 10px", flexShrink: 0 }}
+              style={{ width: "auto", padding: "8px 12px", flexShrink: 0 }}
               disabled={isStartingChat}
             >
               {isStartingChat ? <div className="spinner" style={{ width: "12px", height: "12px" }} /> : "→"}
@@ -351,7 +443,7 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
         </form>
 
         {/* Conversations list */}
-        <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: "4px" }}>
+        <div className="chat-conversations-list">
           {conversations.length === 0 ? (
             <p style={{ fontSize: "12px", color: "var(--text-muted)", textAlign: "center", padding: "20px 0" }}>
               No conversations yet.
@@ -365,7 +457,7 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
               >
                 {/* Online indicator dot */}
                 <div className={`online-dot ${isOnline(conv.other_user.id) ? "active" : ""}`} />
-                <div style={{ minWidth: 0 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ fontSize: "13px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {conv.other_user.username}
                   </div>
@@ -391,16 +483,28 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
           <>
             {/* Chat header */}
             <div className="chat-header-bar">
+              {/* Mobile Back Button */}
+              <button
+                type="button"
+                className="chat-back-btn"
+                onClick={() => setActiveConv(null)}
+                title="Back to conversations"
+              >
+                <ChevronLeftIcon size={18} />
+              </button>
+
               <div className={`online-dot ${isOnline(activeConv.other_user.id) ? "active" : ""}`} style={{ width: "10px", height: "10px" }} />
-              <div style={{ display: "flex", flexDirection: "column" }}>
-                <span style={{ fontSize: "16px", fontWeight: 700 }}>{activeConv.other_user.username}</span>
-                <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "2px" }}>
+              <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                <span style={{ fontSize: "15px", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {activeConv.other_user.username}
+                </span>
+                <span style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "1px" }}>
                   {isOnline(activeConv.other_user.id) ? "Online" : "Offline"}
                 </span>
               </div>
               
               <div className="toggle-switch-wrapper">
-                <span className="toggle-label">Keep Chat History</span>
+                <span className="toggle-label">Keep History</span>
                 <button
                   type="button"
                   className={`toggle-switch ${activeConv.save_messages ? "active" : ""}`}
@@ -459,12 +563,12 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
             </div>
 
             {/* Message input */}
-            <form onSubmit={handleSend} className="chat-input-bar" style={{ padding: "16px 0 0 0", marginTop: "auto", display: "flex", gap: "10px", alignItems: "center" }}>
+            <form onSubmit={handleSend} className="chat-input-bar">
               <div style={{ flex: 1, position: "relative" }}>
                 <input
                   className="form-input"
-                  style={{ width: "100%", padding: "14px 18px", paddingRight: "60px", borderRadius: "100px" }}
-                  placeholder={editingMessageId ? "Editing message..." : `Message ${activeConv.other_user.username}... (try "ping")`}
+                  style={{ width: "100%", padding: "12px 18px", paddingRight: "60px", borderRadius: "100px" }}
+                  placeholder={editingMessageId ? "Editing message..." : `Message ${activeConv.other_user.username}...`}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   maxLength={500}
@@ -478,7 +582,7 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
                 <button
                   type="button"
                   className="btn-secondary"
-                  style={{ borderRadius: "100px", padding: "14px 18px", background: "rgba(255,255,255,0.05)" }}
+                  style={{ borderRadius: "100px", padding: "12px 16px", background: "rgba(255,255,255,0.05)" }}
                   onClick={() => {
                     setEditingMessageId(null);
                     setInput("");
@@ -490,7 +594,7 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
               <button
                 type="submit"
                 className="btn-primary"
-                style={{ width: "48px", height: "48px", padding: "0", borderRadius: "50%", flexShrink: 0 }}
+                style={{ width: "44px", height: "44px", padding: "0", borderRadius: "50%", flexShrink: 0 }}
                 disabled={!input.trim() || isSending}
               >
                 {isSending ? <div className="spinner" style={{ width: "14px", height: "14px" }} /> : <div style={{ display: "flex", marginLeft: "-2px" }}><SendIcon size={18} /></div>}

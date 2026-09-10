@@ -28,6 +28,7 @@ NEXTAUTH_SECRET=your_super_secret_key
 # Supabase (Database & Realtime)
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 
 # Cloudflare R2 / AWS S3
 R2_ACCESS_KEY_ID=your_access_key

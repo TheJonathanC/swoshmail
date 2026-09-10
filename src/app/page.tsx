@@ -5,7 +5,7 @@ import { useSession, signIn, signOut } from "next-auth/react";
 import dynamic from "next/dynamic";
 import { 
   FolderIcon, FileIcon, CloudIcon, TrashIcon, DownloadIcon, EyeIcon, 
-  MailIcon, UploadIcon, ChevronRightIcon, SearchIcon, PaperclipIcon, PlusIcon, MessageIcon, CheckIcon
+  MailIcon, UploadIcon, ChevronRightIcon, SearchIcon, PaperclipIcon, PlusIcon, MessageIcon, CheckIcon, CloseIcon
 } from "@/components/Icons";
 
 const ChatPanel = dynamic(() => import("@/components/ChatPanel"), { ssr: false });
@@ -513,16 +513,25 @@ export default function Home() {
 
   return (
     <div className="workspace-container glass-panel">
-      {/* 1. Left Sidebar Navigation */}
+      {/* 1. Sidebar / Mobile Top Navigation */}
       <aside className="sidebar">
-        <div>
-          <div className="dashboard-logo" style={{ marginBottom: "30px" }}>
-            <div className="logo-icon">
-              <div style={{ transform: "rotate(-10deg)", display: "flex" }}>
-                <MailIcon size={22} />
+        <div className="sidebar-top-section">
+          <div className="sidebar-header-row">
+            <div className="dashboard-logo">
+              <div className="logo-icon">
+                <div style={{ transform: "rotate(-10deg)", display: "flex" }}>
+                  <MailIcon size={22} />
+                </div>
               </div>
+              <span className="logo-text">Swoshmail</span>
             </div>
-            <span className="logo-text" style={{ fontSize: "20px" }}>Swoshmail</span>
+
+            <div className="mobile-user-actions">
+              <span className="user-handle">@{session?.user?.name}</span>
+              <button className="btn-secondary lock-btn" onClick={handleLogout} title="Lock Console">
+                Lock
+              </button>
+            </div>
           </div>
 
           <nav className="sidebar-menu">
@@ -530,19 +539,19 @@ export default function Home() {
               className={`nav-item ${activeTab === "mail" ? "active" : ""}`}
               onClick={() => setActiveTab("mail")}
             >
-              <MailIcon size={18} /> Swosh Mail
+              <MailIcon size={18} /> <span>Swosh Mail</span>
             </button>
             <button
               className={`nav-item ${activeTab === "drive" ? "active" : ""}`}
               onClick={() => setActiveTab("drive")}
             >
-              <CloudIcon size={18} /> Swosh Drive
+              <CloudIcon size={18} /> <span>Swosh Drive</span>
             </button>
             <button
               className={`nav-item ${activeTab === "chat" ? "active" : ""}`}
               onClick={() => setActiveTab("chat")}
             >
-              <MessageIcon size={18} /> Swosh Chat
+              <MessageIcon size={18} /> <span>Swosh Chat</span>
             </button>
           </nav>
         </div>
@@ -564,7 +573,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderTop: "1px solid rgba(255, 255, 255, 0.05)" }}>
+          <div className="desktop-user-row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderTop: "1px solid rgba(255, 255, 255, 0.05)" }}>
             <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-muted)" }}>@{session?.user?.name}</span>
             <button className="btn-secondary" style={{ padding: "6px 12px", fontSize: "11px" }} onClick={handleLogout}>
               Lock Console
@@ -626,7 +635,7 @@ export default function Home() {
               {/* Attachment selectors */}
               <div style={{ marginBottom: "24px" }}>
                 <label className="form-label" style={{ marginBottom: "12px", display: "block" }}>Attachments</label>
-                <div style={{ display: "flex", gap: "12px", marginBottom: "15px" }}>
+                <div className="attachment-buttons-row" style={{ display: "flex", gap: "12px", marginBottom: "15px" }}>
                   <button
                     type="button"
                     className="btn-secondary"
@@ -744,9 +753,9 @@ export default function Home() {
         {/* MODULE: Swosh Drive tab */}
         {activeTab === "drive" && (
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+            <div className="drive-header-bar" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
               <h2 style={{ fontSize: "20px", fontWeight: 700 }}>Swosh Drive Explorer</h2>
-              <div style={{ display: "flex", gap: "12px" }}>
+              <div className="drive-actions-group" style={{ display: "flex", gap: "12px" }}>
                 {isCreatingFolder ? (
                   <form onSubmit={handleCreateFolder} style={{ display: "flex", gap: "6px", alignItems: "center" }}>
                     <input
@@ -998,7 +1007,7 @@ export default function Home() {
             </header>
             <div className="modal-body" style={{ padding: "20px" }}>
               <p style={{ marginBottom: "12px", fontSize: "14px", lineHeight: 1.5 }}>
-                Are you sure you want to delete the folder <strong>"{folderToDelete.name}"</strong>?
+                Are you sure you want to delete the folder <strong>&ldquo;{folderToDelete.name}&rdquo;</strong>?
               </p>
               <div className="error-text" style={{ background: "rgba(239,68,68,0.1)", padding: "12px", borderRadius: "8px", color: "var(--danger)" }}>
                 ⚠️ <strong>WARNING:</strong> This will permanently delete all files and subfolders inside it. This action cannot be undone.
@@ -1039,8 +1048,9 @@ export default function Home() {
                 className="btn-remove"
                 style={{ padding: "6px" }}
                 onClick={() => setPreviewFile(null)}
+                title="Close"
               >
-                <TrashIcon size={14} /> {/* Actually should be X icon, but we'll use btn-remove which acts like X in this context */}
+                <CloseIcon size={16} />
               </button>
             </header>
 
@@ -1052,7 +1062,11 @@ export default function Home() {
                 if (isImage) {
                   return (
                     <div className="preview-image-container">
-                      <img src={previewFile.url} alt={previewFile.name} className="preview-image" />
+                      <img
+                        src={`${previewFile.url}&inline=true`}
+                        alt={previewFile.name}
+                        className="preview-image"
+                      />
                     </div>
                   );
                 }
@@ -1102,15 +1116,41 @@ export default function Home() {
                 className="btn-remove"
                 style={{ padding: "6px" }}
                 onClick={() => setIsMailFileModalOpen(false)}
+                title="Close"
               >
-                <TrashIcon size={14} />
+                <CloseIcon size={16} />
               </button>
             </header>
 
             <div className="modal-body">
+              {/* Folder navigation inside attach modal */}
+              {folders.length > 0 && (
+                <div className="attach-folder-nav" style={{ display: "flex", gap: "6px", overflowX: "auto", paddingBottom: "10px", marginBottom: "8px", borderBottom: "1px solid rgba(255,255,255,0.06)", flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className={`btn-secondary ${currentFolderId === "root" ? "active" : ""}`}
+                    style={{ padding: "4px 10px", fontSize: "12px", background: currentFolderId === "root" ? "var(--primary-glow)" : undefined, color: currentFolderId === "root" ? "var(--primary)" : undefined }}
+                    onClick={() => setCurrentFolderId("root")}
+                  >
+                    <CloudIcon size={12} /> Root
+                  </button>
+                  {folders.map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      className={`btn-secondary ${currentFolderId === f.id ? "active" : ""}`}
+                      style={{ padding: "4px 10px", fontSize: "12px", background: currentFolderId === f.id ? "var(--primary-glow)" : undefined, color: currentFolderId === f.id ? "var(--primary)" : undefined }}
+                      onClick={() => setCurrentFolderId(f.id)}
+                    >
+                      <FolderIcon size={12} /> {f.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {driveFiles.length === 0 ? (
                 <div className="empty-state" style={{ padding: "20px 0" }}>
-                  Your drive is empty. Upload files in the Drive tab first!
+                  No files found in this folder.
                 </div>
               ) : (
                 driveFiles.map((file) => {

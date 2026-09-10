@@ -17,10 +17,12 @@ const username = args[0];
 const password = args[1];
 const hashed = hashPassword(password);
 
+const safeUsername = username.replace(/'/g, "''");
+
 console.log("\n==================================================");
 console.log("             SWOSHMAIL USER SQL GENERATOR          ");
 console.log("==================================================\n");
 console.log(`Copy and paste this SQL query into your Supabase SQL Editor to create the user:\n`);
 console.log(`INSERT INTO users (username, password_hash) `);
-console.log(`VALUES ('${username}', '${hashed}');\n`);
+console.log(`VALUES ('${safeUsername}', '${hashed}');\n`);
 console.log("==================================================");

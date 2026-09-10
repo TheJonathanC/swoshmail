@@ -30,20 +30,24 @@ export async function GET(request: Request) {
       .single();
 
     if (convError || !conv) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
-    const { data: messages, error } = await supabase
+
+    // Fetch the most recent 100 messages (ordered descending, then reversed for chronological view)
+    const { data: rawMessages, error } = await supabase
       .from("messages")
       .select("id, sender_id, content, created_at")
       .eq("conversation_id", conversationId)
-      .order("created_at", { ascending: true })
-      .limit(200);
+      .order("created_at", { ascending: false })
+      .limit(100);
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    const messages = (rawMessages || []).reverse();
 
     // Snapchat mechanics: if save_messages is false, delete the messages the user just read
     if (!conv.save_messages && messages && messages.length > 0) {
       const readMessageIds = messages
-        .filter((m: any) => m.sender_id !== userId)
-        .map((m: any) => m.id);
+        .filter((m: { sender_id: string; id: string }) => m.sender_id !== userId)
+        .map((m: { id: string }) => m.id);
 
       if (readMessageIds.length > 0) {
         // Delete messages sent by the other user, as the current user has now "seen" them
@@ -58,8 +62,9 @@ export async function GET(request: Request) {
       { messages: messages || [] },
       { headers: { "Cache-Control": "no-store, max-age=0" } }
     );
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "Failed to load messages";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
@@ -100,9 +105,37 @@ export async function POST(request: Request) {
 
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
+    // Auto-prune oldest messages: Keep conversation capped at MAX_STORED_MESSAGES (100)
+    // This prevents database bloat and ensures space is always available for newer messages
+    try {
+      const MAX_STORED_MESSAGES = 100;
+      const { count } = await supabase
+        .from("messages")
+        .select("id", { count: "exact", head: true })
+        .eq("conversation_id", conversationId);
+
+      if (count && count > MAX_STORED_MESSAGES) {
+        const excess = count - MAX_STORED_MESSAGES;
+        const { data: oldest } = await supabase
+          .from("messages")
+          .select("id")
+          .eq("conversation_id", conversationId)
+          .order("created_at", { ascending: true })
+          .limit(excess);
+
+        if (oldest && oldest.length > 0) {
+          const pruneIds = oldest.map((m: { id: string }) => m.id);
+          await supabase.from("messages").delete().in("id", pruneIds);
+        }
+      }
+    } catch (pruneErr) {
+      console.error("Message auto-pruning error:", pruneErr);
+    }
+
     return NextResponse.json({ success: true, message: msg });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "Failed to persist message";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
@@ -138,8 +171,9 @@ export async function PATCH(request: Request) {
     if (error || !msg) return NextResponse.json({ error: "Failed to edit message. It may not exist or you don't own it." }, { status: 403 });
 
     return NextResponse.json({ success: true, message: msg });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "Failed to edit message";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
 
@@ -163,7 +197,8 @@ export async function DELETE(request: Request) {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
     return NextResponse.json({ success: true });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "Failed to delete message";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -209,16 +209,15 @@ export async function POST(request: Request) {
       .select()
       .single();
 
-    if (!logError && mailLog) {
-      // Create email attachment log entries
-      for (const attachment of loggedAttachments) {
-        await supabase.from("email_attachments").insert({
-          email_log_id: mailLog.id,
-          file_id: attachment.file_id,
-          file_name: attachment.name,
-          file_size: attachment.size,
-        });
-      }
+    if (!logError && mailLog && loggedAttachments.length > 0) {
+      // Create email attachment log entries in a single batch
+      const attachmentRows = loggedAttachments.map((attachment) => ({
+        email_log_id: mailLog.id,
+        file_id: attachment.file_id,
+        file_name: attachment.name,
+        file_size: attachment.size,
+      }));
+      await supabase.from("email_attachments").insert(attachmentRows);
     }
 
     return NextResponse.json({ success: true, message: "Email sent successfully!" });
