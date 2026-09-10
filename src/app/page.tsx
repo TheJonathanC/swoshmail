@@ -664,7 +664,7 @@ export default function Home() {
               {/* Attachment selectors */}
               <div style={{ marginBottom: "24px" }}>
                 <label className="form-label" style={{ marginBottom: "12px", display: "block" }}>Attachments</label>
-                <div className="attachment-buttons-row" style={{ display: "flex", gap: "12px", marginBottom: "15px" }}>
+                <div className="attachment-buttons-row">
                   <button
                     type="button"
                     className="btn-secondary"
@@ -943,7 +943,7 @@ export default function Home() {
                         <th>Name</th>
                         <th>Size</th>
                         <th>Uploaded</th>
-                        <th style={{ textAlign: "right" }}>Actions</th>
+                        <th className="drive-actions-th">Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -966,45 +966,47 @@ export default function Home() {
                           <td className="drive-col-date">
                             {new Date(file.uploaded_at).toLocaleDateString()}
                           </td>
-                          <td className="action-buttons-cell">
-                            {isPreviewable(file.name) && (
+                          <td className="drive-col-actions">
+                            <div className="action-buttons-cell">
+                              {isPreviewable(file.name) && (
+                                <button
+                                  type="button"
+                                  className="btn-icon"
+                                  title="Preview File"
+                                  aria-label="Preview File"
+                                  onClick={() => handleFilePreview(file)}
+                                >
+                                  <EyeIcon size={16} />
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 className="btn-icon"
-                                title="Preview File"
-                                aria-label="Preview File"
-                                onClick={() => handleFilePreview(file)}
+                                title="Attach to Swosh Mail"
+                                aria-label="Attach to Swosh Mail"
+                                onClick={() => handleDriveFileMail(file)}
                               >
-                                <EyeIcon size={16} />
+                                <MailIcon size={16} />
                               </button>
-                            )}
-                            <button
-                              type="button"
-                              className="btn-icon"
-                              title="Attach to Swosh Mail"
-                              aria-label="Attach to Swosh Mail"
-                              onClick={() => handleDriveFileMail(file)}
-                            >
-                              <MailIcon size={16} />
-                            </button>
-                            <a
-                              href={file.url}
-                              className="btn-icon"
-                              title="Download"
-                              aria-label="Download"
-                              download={file.name}
-                            >
-                              <DownloadIcon size={16} />
-                            </a>
-                            <button
-                              type="button"
-                              className="btn-icon delete"
-                              title="Delete File"
-                              aria-label="Delete File"
-                              onClick={() => handleDriveFileDelete(file.id, file.name)}
-                            >
-                              <TrashIcon size={16} />
-                            </button>
+                              <a
+                                href={file.url}
+                                className="btn-icon"
+                                title="Download"
+                                aria-label="Download"
+                                download={file.name}
+                              >
+                                <DownloadIcon size={16} />
+                              </a>
+                              <button
+                                type="button"
+                                className="btn-icon delete"
+                                title="Delete File"
+                                aria-label="Delete File"
+                                onClick={() => handleDriveFileDelete(file.id, file.name)}
+                              >
+                                <TrashIcon size={16} />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
