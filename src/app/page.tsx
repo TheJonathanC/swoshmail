@@ -1092,7 +1092,7 @@ export default function Home() {
                   <span>
                     {uploadQueueCount > 1
                       ? `Uploading file ${Math.min(uploadQueueDone + 1, uploadQueueCount)} of ${uploadQueueCount}...`
-                      : "Uploading file to Cloudflare R2..."}
+                      : "Uploading file..."}
                   </span>
                   <span>{driveUploadProgress}%</span>
                 </div>
@@ -1400,7 +1400,7 @@ export default function Home() {
                 Are you sure you want to delete <strong>&ldquo;{fileToDelete.name}&rdquo;</strong>?
               </p>
               <p style={{ fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.5 }}>
-                This file will be permanently removed from your Swosh Drive and cloud storage. This action cannot be undone.
+                This file will be permanently removed from your Swosh Drive. This action cannot be undone.
               </p>
             </div>
             <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "15px" }}>
@@ -1524,10 +1524,10 @@ export default function Home() {
       {/* MODAL: Duplicate File Conflict */}
       {duplicateConflict && (
         <div className="modal-overlay">
-          <div className="modal-content glass-panel" style={{ maxWidth: "460px" }} onClick={(e) => e.stopPropagation()}>
+          <div className="modal-content glass-panel" style={{ maxWidth: "400px" }} onClick={(e) => e.stopPropagation()}>
             <header className="modal-header">
-              <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "#f59e0b" }}>
-                <RefreshCwIcon size={20} /> File Already Exists
+              <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--foreground)" }}>
+                <span style={{ color: "#f59e0b", display: "inline-flex" }}><RefreshCwIcon size={18} /></span> File Already Exists
               </h3>
               <button
                 type="button"
@@ -1547,102 +1547,89 @@ export default function Home() {
               </button>
             </header>
             <div className="modal-body" style={{ padding: "16px 0 20px 0" }}>
-              <p style={{ marginBottom: "12px", fontSize: "14px", lineHeight: 1.5 }}>
-                A file named <strong>&ldquo;{duplicateConflict.file.name}&rdquo;</strong> already exists in this folder.
+              <p style={{ fontSize: "14px", lineHeight: 1.5, marginBottom: "14px" }}>
+                <strong>&ldquo;{duplicateConflict.file.name}&rdquo;</strong> already exists in this folder.
               </p>
 
-              <div style={{ background: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.06)", borderRadius: "10px", padding: "12px", marginBottom: "16px", fontSize: "12.5px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-                  <span style={{ color: "var(--text-muted)" }}>Existing File:</span>
-                  <span>{formatBytes(parseInt(duplicateConflict.existingFile.size))} &bull; {new Date(duplicateConflict.existingFile.uploaded_at).toLocaleDateString()}</span>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(255, 255, 255, 0.04)", border: "1px solid rgba(255, 255, 255, 0.06)", borderRadius: "8px", padding: "10px 14px", marginBottom: "18px" }}>
+                <div>
+                  <span style={{ color: "var(--text-muted)", fontSize: "11.5px", display: "block" }}>Existing</span>
+                  <span style={{ fontSize: "13px", fontWeight: 500 }}>{formatBytes(parseInt(duplicateConflict.existingFile.size))}</span>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "var(--text-muted)" }}>New Upload:</span>
-                  <span style={{ color: "var(--primary)", fontWeight: 600 }}>{formatBytes(duplicateConflict.file.size)}</span>
+                <ChevronRightIcon size={16} className="breadcrumb-separator" />
+                <div style={{ textAlign: "right" }}>
+                  <span style={{ color: "var(--text-muted)", fontSize: "11.5px", display: "block" }}>New</span>
+                  <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--primary)" }}>{formatBytes(duplicateConflict.file.size)}</span>
                 </div>
               </div>
 
-              <p style={{ fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.5, marginBottom: "16px" }}>
-                Would you like to replace the existing file or append (1) to keep both?
-              </p>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div style={{ display: "flex", gap: "10px" }}>
                 <button
                   type="button"
                   className="btn-secondary"
                   style={{
-                    padding: "12px 14px",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "10px",
-                    textAlign: "left",
-                    borderRadius: "10px",
+                    flex: 1,
+                    padding: "10px 14px",
+                    justifyContent: "center",
                     border: "1px solid rgba(239, 68, 68, 0.3)",
+                    color: "var(--danger)",
                     background: "rgba(239, 68, 68, 0.08)",
                   }}
                   onClick={() => handleDuplicateChoice("replace")}
                 >
-                  <span style={{ color: "var(--danger)", display: "inline-flex", flexShrink: 0 }}><RefreshCwIcon size={18} /></span>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: "13.5px", color: "#fff" }}>
-                      Replace existing file
-                    </div>
-                    <div style={{ fontSize: "11.5px", color: "var(--text-muted)", marginTop: "2px" }}>
-                      Overwrites the old file in cloud storage with the new file
-                    </div>
-                  </div>
+                  Replace
                 </button>
-
                 <button
                   type="button"
-                  className="btn-secondary"
-                  style={{
-                    padding: "12px 14px",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "10px",
-                    textAlign: "left",
-                    borderRadius: "10px",
-                    border: "1px solid rgba(99, 102, 241, 0.3)",
-                    background: "rgba(99, 102, 241, 0.08)",
-                  }}
+                  className="btn-primary"
+                  style={{ flex: 1, padding: "10px 14px", justifyContent: "center" }}
                   onClick={() => handleDuplicateChoice("rename")}
                 >
-                  <span style={{ color: "var(--primary)", display: "inline-flex", flexShrink: 0 }}><FilesIcon size={18} /></span>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: "13.5px", color: "#fff" }}>
-                      Append (1) / Keep both files
-                    </div>
-                    <div style={{ fontSize: "11.5px", color: "var(--text-muted)", marginTop: "2px" }}>
-                      Saves new file with a numbered suffix (e.g. &ldquo;{duplicateConflict.file.name.includes(".") ? duplicateConflict.file.name.replace(/(\.[^.]+)$/, " (1)$1") : duplicateConflict.file.name + " (1)"}&rdquo;)
-                    </div>
-                  </div>
+                  Keep Both (1)
                 </button>
               </div>
             </div>
-            <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "15px", display: "flex", justifyContent: "space-between" }}>
-              <button
-                type="button"
-                className="btn-secondary"
-                style={{ padding: "8px 14px" }}
-                onClick={() => handleDuplicateChoice("skip")}
-              >
-                Skip This File
-              </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                style={{ padding: "8px 14px", color: "var(--danger)" }}
-                onClick={() => {
-                  setDuplicateConflict(null);
-                  setIsDriveUploading(false);
-                  setUploadQueueCount(0);
-                  setUploadQueueDone(0);
-                  fetchDriveFiles();
-                }}
-              >
-                Cancel Remaining
-              </button>
+            <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "12px", display: "flex", justifyContent: "space-between" }}>
+              {uploadQueueCount > 1 ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ padding: "6px 12px", fontSize: "12px" }}
+                    onClick={() => handleDuplicateChoice("skip")}
+                  >
+                    Skip
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ padding: "6px 12px", fontSize: "12px", color: "var(--text-muted)" }}
+                    onClick={() => {
+                      setDuplicateConflict(null);
+                      setIsDriveUploading(false);
+                      setUploadQueueCount(0);
+                      setUploadQueueDone(0);
+                      fetchDriveFiles();
+                    }}
+                  >
+                    Cancel all
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ padding: "6px 14px", fontSize: "12px", marginLeft: "auto" }}
+                  onClick={() => {
+                    setDuplicateConflict(null);
+                    setIsDriveUploading(false);
+                    setUploadQueueCount(0);
+                    setUploadQueueDone(0);
+                  }}
+                >
+                  Cancel
+                </button>
+              )}
             </footer>
           </div>
         </div>
