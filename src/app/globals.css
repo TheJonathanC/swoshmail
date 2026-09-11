@@ -737,6 +737,175 @@ body {
   gap: 20px;
 }
 
+/* Drive Selection Toolbar */
+.drive-selection-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 0 16px rgba(99, 102, 241, 0.15);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  animation: fadeIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.selection-info-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.selection-count-badge {
+  background: var(--primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.selection-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.selection-text-btn {
+  background: transparent;
+  border: none;
+  color: #818cf8;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.2s;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.selection-text-btn:hover {
+  color: #fff;
+}
+
+.selection-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.selection-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 13px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid transparent;
+}
+
+.btn-danger.selection-btn {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+}
+
+.btn-danger.selection-btn:hover:not(:disabled) {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+.selection-btn-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.selection-btn-close:hover {
+  color: var(--foreground);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Custom Glassmorphic Checkbox */
+.drive-col-select {
+  width: 44px;
+  text-align: center;
+  vertical-align: middle;
+  padding: 12px 10px !important;
+}
+
+.drive-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 17px;
+  height: 17px;
+  border: 1.5px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.6);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  vertical-align: middle;
+  position: relative;
+  margin: 0;
+}
+
+.drive-checkbox:hover {
+  border-color: var(--primary);
+  box-shadow: 0 0 8px rgba(99, 102, 241, 0.25);
+}
+
+.drive-checkbox:checked {
+  background: var(--primary);
+  border-color: var(--primary);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.4);
+}
+
+.drive-checkbox:checked::after {
+  content: "";
+  display: block;
+  width: 4px;
+  height: 8px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+  margin-top: -2px;
+}
+
+.drive-checkbox:indeterminate {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.drive-checkbox:indeterminate::after {
+  content: "";
+  display: block;
+  width: 8px;
+  height: 2px;
+  background: white;
+  border-radius: 1px;
+}
+
 /* Files Table View */
 .drive-table-wrapper {
   overflow-x: auto;
@@ -764,12 +933,78 @@ body {
 }
 
 .drive-file-row {
-  transition: background 0.2s;
+  transition: background 0.2s, border-color 0.2s;
 }
 
 .drive-file-row:hover {
   background: rgba(255, 255, 255, 0.02);
 }
+
+.drive-file-row.selected {
+  background: rgba(99, 102, 241, 0.08) !important;
+}
+
+/* Batch Delete Preview List */
+.batch-delete-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 10px 12px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.batch-delete-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.batch-delete-icon {
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.batch-delete-name {
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.batch-delete-size {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.batch-delete-overflow {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding-top: 4px;
+}
+
+.spinner-sm {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
 
 .drive-file-main-info {
   display: flex;
@@ -1446,12 +1681,42 @@ body {
 .breadcrumbs-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 20px;
   font-size: 13px;
   color: var(--text-muted);
   font-weight: 500;
   flex-wrap: wrap;
+}
+
+.breadcrumbs-trail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn-download-folder {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.btn-download-folder:hover {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.3);
+  color: #fff;
 }
 
 .breadcrumb-item {
@@ -1526,7 +1791,13 @@ body {
   white-space: nowrap;
 }
 
-.folder-delete-btn {
+.folder-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.folder-action-btn {
   background: transparent;
   border: none;
   color: var(--text-muted);
@@ -1540,26 +1811,30 @@ body {
   opacity: 0;
 }
 
-.folder-card:hover .folder-delete-btn {
+.folder-card:hover .folder-action-btn {
   opacity: 1;
 }
 
-.folder-delete-btn:hover {
+.folder-action-btn.download:hover {
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--primary);
+}
+
+.folder-action-btn.delete:hover {
   background: rgba(239, 68, 68, 0.1);
   color: var(--danger);
 }
 
-/* Touch & Mobile Folder Delete: MUST be accessible on touch screens */
+/* Touch & Mobile Folder Action Buttons */
 @media (max-width: 768px), (hover: none) {
-  .folder-delete-btn {
-    opacity: 0.7;
+  .folder-action-btn {
+    opacity: 0.75;
   }
-  .folder-delete-btn:active {
+  .folder-action-btn:active {
     opacity: 1;
-    background: rgba(239, 68, 68, 0.2);
-    color: var(--danger);
   }
 }
+
 
 /* Drive Explorer Controls */
 .drive-header-bar {
@@ -2022,6 +2297,36 @@ body {
     border-color: rgba(255, 255, 255, 0.09);
   }
 
+  .drive-col-select {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0 !important;
+    border-bottom: none !important;
+    flex-shrink: 0 !important;
+    width: auto !important;
+    margin-right: 2px !important;
+  }
+
+  .drive-selection-toolbar {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+
+  .selection-text {
+    font-size: 13px;
+  }
+
+  .selection-btn {
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  .btn-download-folder {
+    padding: 4px 8px;
+    font-size: 11.5px;
+  }
+
   .drive-col-name {
     display: flex !important;
     align-items: center !important;
@@ -2030,6 +2335,7 @@ body {
     min-width: 0 !important;
     flex: 1 1 auto !important;
   }
+
 
   .drive-col-size,
   .drive-col-date {

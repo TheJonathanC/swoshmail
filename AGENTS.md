@@ -94,8 +94,11 @@ Swosh Workspace is a unified, glassmorphic dark-mode productivity platform integ
   - Prompt user with custom modal: **Replace** or **Keep Both (1)**.
   - *Replace*: Calls backend with `replaceFileId`, deletes old R2 object, uploads new object, and updates existing Supabase row.
   - *Keep Both*: Appends ` (1)`, ` (2)` etc. to the file name and uploads as a new file.
+- **Multi-File Selection & Batch Delete**: Checkboxes allow multi-file selection with a custom glassmorphic confirmation modal for batch permanent deletions.
+- **ZIP Archive Downloads**: Generates and streams compressed `.zip` archives via `/api/drive/zip` for either multiple selected files or whole directory trees (preserving nested folder hierarchies).
 - **Cascading Deletions**: Deleting a folder deletes all child folders, child files in Supabase, and their corresponding R2 objects.
 - **Previews**: Files are streamed through `/api/drive/preview` with proper `Content-Type` for inline display (images, markdown, code, text, CSV).
+
 
 ### 💬 Swosh Chat
 - **Real-time Engine**: Supabase Realtime WebSocket broadcast channel (`chat:${conversationId}`).

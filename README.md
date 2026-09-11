@@ -18,9 +18,12 @@ A unified, glassmorphic dark-mode productivity dashboard integrating an email cl
   - *Create Subfolder*: Automatically creates the folder in Swosh Drive and uploads all nested files into it.
   - *Upload Flat*: Uploads all files directly into the current directory.
 - **Smart Duplicate Conflict Resolution**: Detects name collisions upon upload and offers a clean modal to either **Replace** the existing file or **Keep Both (1)** with automatic numbered suffixing.
+- **Multi-File Selection & Batch Actions**: Select multiple files via custom glassmorphic checkboxes with a dynamic selection toolbar to batch delete or download as a bundled ZIP archive.
+- **Folder & Archive Downloads**: Download entire directory trees or selected files as compressed `.zip` archives with automatic directory structure preservation.
 - **Inline Previews**: Built-in file previewer for images (PNG, JPG, SVG, WebP, GIF) and code/text documents (TXT, MD, JSON, JS, TS, CSS, HTML, CSV, LOG).
-- **Quota Management**: Real-time storage quota tracking with client and server enforcement.
-- **Directory Hierarchy**: Create multi-level folders with breadcrumb trail navigation and cascading folder deletion.
+- **Quota Management**: Real-time storage quota tracking (1 GB personal tier) with client and server enforcement.
+- **Directory Hierarchy**: Create multi-level folders with breadcrumb trail navigation, in-folder ZIP download, and cascading folder deletion.
+
 
 ### 💬 Swosh Chat (Real-Time Messaging)
 - **Message Replies**: Quote any message in the chat with author tag and snippet preview. Clicking a quoted reply smoothly scrolls to and highlights the target message with an animated glow.

@@ -35,7 +35,10 @@ Swosh Workspace is a unified dark-mode SaaS dashboard written in Next.js 16 (App
    - Multi-file batch upload support.
    - Directory/folder upload support with interactive user prompt (Create Subfolder vs Upload Flat).
    - Duplicate filename conflict resolution (Replace vs Keep Both with numbered suffix).
+   - Multi-file selection with custom confirmation modal for batch permanent deletions.
+   - ZIP archive downloads for selected files or whole directory trees (preserving folder structures).
    - Cascading folder deletion and inline preview streaming (`/api/drive/preview`).
+
 
 3. **Swosh Chat (Real-time Messaging)**:
    - Real-time messaging powered by Supabase Realtime WebSockets (`src/components/ChatPanel.tsx`).

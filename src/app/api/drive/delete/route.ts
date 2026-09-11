@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { deleteFromR2 } from "@/lib/r2";
+import { checkRateLimit } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
@@ -10,50 +11,84 @@ export async function POST(request: Request) {
     if (!session || !session.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    const userId = (session.user as any).id;
+    const userId = (session.user as { id?: string }).id;
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    // Rate Limit: 60 delete operations per minute
+    const rl = checkRateLimit(`drive_delete_${userId}`, 60, 60000);
+    if (!rl.success) {
+      return NextResponse.json({ error: "Rate limit exceeded. Too many delete requests." }, { status: 429 });
+    }
 
     const body = await request.json();
-    const { fileId } = body;
+    const { fileId, fileIds } = body;
 
-    if (!fileId) {
-      return NextResponse.json({ error: "No file ID provided" }, { status: 400 });
+    // Normalize IDs into an array
+    const targetIds: string[] = [];
+    if (Array.isArray(fileIds)) {
+      for (const id of fileIds) {
+        if (typeof id === "string" && id.trim()) {
+          targetIds.push(id.trim());
+        }
+      }
+    } else if (typeof fileId === "string" && fileId.trim()) {
+      targetIds.push(fileId.trim());
     }
 
-    // 1. Fetch file to check ownership
-    const { data: file, error: fetchError } = await supabase
+    if (targetIds.length === 0) {
+      return NextResponse.json({ error: "No file ID(s) provided" }, { status: 400 });
+    }
+
+    // 1. Fetch files belonging to user
+    const { data: files, error: fetchError } = await supabase
       .from("files")
-      .select("*")
-      .eq("id", fileId)
-      .single();
+      .select("id, key, name")
+      .in("id", targetIds)
+      .eq("owner_id", userId);
 
-    if (fetchError || !file) {
-      return NextResponse.json({ error: "File not found" }, { status: 404 });
+    if (fetchError || !files || files.length === 0) {
+      return NextResponse.json({ error: "Files not found or access denied" }, { status: 404 });
     }
 
-    if (file.owner_id !== userId) {
-      return NextResponse.json({ error: "Unauthorized to delete this file" }, { status: 403 });
-    }
-
-    // 2. Delete file from Cloudflare R2
-    try {
-      await deleteFromR2(file.key);
-    } catch (r2Error) {
-      console.error("R2 deletion failed, proceeding to clear DB anyway:", r2Error);
+    // 2. Delete each file from R2
+    const deletedIds: string[] = [];
+    for (const file of files) {
+      try {
+        await deleteFromR2(file.key);
+      } catch (r2Error) {
+        console.error(`R2 deletion failed for key ${file.key}:`, r2Error);
+      }
+      deletedIds.push(file.id);
     }
 
     // 3. Delete from Database
     const { error: deleteError } = await supabase
       .from("files")
       .delete()
-      .eq("id", fileId);
+      .in("id", deletedIds)
+      .eq("owner_id", userId);
 
     if (deleteError) {
-      return NextResponse.json({ error: "Failed to delete file record from database" }, { status: 500 });
+      return NextResponse.json({ error: "Failed to delete file records from database" }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, message: "File successfully deleted" });
-  } catch (error: any) {
+    const message = deletedIds.length === 1
+      ? "File successfully deleted"
+      : `${deletedIds.length} files successfully deleted`;
+
+    return NextResponse.json({
+      success: true,
+      deletedCount: deletedIds.length,
+      deletedIds,
+      message,
+    });
+  } catch (error: unknown) {
     console.error("Delete file error:", error);
-    return NextResponse.json({ error: error.message || "Failed to delete file" }, { status: 500 });
+    const message = error instanceof Error ? error.message : "Failed to delete file(s)";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }
+
+

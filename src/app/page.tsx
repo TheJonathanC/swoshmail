@@ -6,8 +6,9 @@ import dynamic from "next/dynamic";
 import { 
   FolderIcon, FileIcon, CloudIcon, TrashIcon, DownloadIcon, EyeIcon, 
   MailIcon, UploadIcon, ChevronRightIcon, SearchIcon, PaperclipIcon, PlusIcon, MessageIcon, CheckIcon, CloseIcon,
-  AlertCircleIcon, LockIcon, RefreshCwIcon, FilesIcon
+  AlertCircleIcon, LockIcon, RefreshCwIcon, FilesIcon, ArchiveIcon
 } from "@/components/Icons";
+
 
 const ChatPanel = dynamic(() => import("@/components/ChatPanel"), { ssr: false });
 
@@ -89,6 +90,13 @@ export default function Home() {
   const [fileToDelete, setFileToDelete] = useState<{ id: string; name: string } | null>(null);
   const [isDeletingFile, setIsDeletingFile] = useState(false);
 
+  // Multi-selection, Batch Delete & ZIP Download state
+  const [selectedFileIds, setSelectedFileIds] = useState<string[]>([]);
+  const [isBatchDeleteModalOpen, setIsBatchDeleteModalOpen] = useState(false);
+  const [isDeletingBatch, setIsDeletingBatch] = useState(false);
+  const [isDownloadingZip, setIsDownloadingZip] = useState(false);
+  const [zippingTargetId, setZippingTargetId] = useState<string | null>(null);
+
   // File Preview state
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
   const [previewContent, setPreviewContent] = useState("");
@@ -121,9 +129,11 @@ export default function Home() {
 
   useEffect(() => {
     if (status === "authenticated") {
+      setSelectedFileIds([]);
       fetchDriveFiles();
     }
   }, [status, currentFolderId]);
+
 
   const addToast = (type: "success" | "danger", title: string, message: string) => {
     const id = Date.now().toString();
@@ -528,6 +538,7 @@ export default function Home() {
       if (res.ok) {
         addToast("success", "Deleted", `${fileToDelete.name} was removed.`);
         setAttachedDriveFiles((prev) => prev.filter((f) => f.id !== fileToDelete.id));
+        setSelectedFileIds((prev) => prev.filter((id) => id !== fileToDelete.id));
         fetchDriveFiles();
       } else {
         const data = await res.json();
@@ -540,6 +551,139 @@ export default function Home() {
       setFileToDelete(null);
     }
   };
+
+  // --- Multi-selection handlers ---
+  const toggleSelectFile = (fileId: string) => {
+    setSelectedFileIds((prev) =>
+      prev.includes(fileId) ? prev.filter((id) => id !== fileId) : [...prev, fileId]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    const visibleIds = filteredDriveFiles.map((f) => f.id);
+    const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedFileIds.includes(id));
+    if (allSelected) {
+      setSelectedFileIds((prev) => prev.filter((id) => !visibleIds.includes(id)));
+    } else {
+      setSelectedFileIds((prev) => Array.from(new Set([...prev, ...visibleIds])));
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedFileIds([]);
+  };
+
+  const confirmBatchDelete = async () => {
+    if (selectedFileIds.length === 0 || isDeletingBatch) return;
+    setIsDeletingBatch(true);
+
+    try {
+      const res = await fetch("/api/drive/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileIds: selectedFileIds }),
+      });
+
+      if (res.ok) {
+        const count = selectedFileIds.length;
+        addToast("success", "Files Deleted", `${count} ${count === 1 ? "file was" : "files were"} permanently removed.`);
+        setAttachedDriveFiles((prev) => prev.filter((f) => !selectedFileIds.includes(f.id)));
+        setSelectedFileIds([]);
+        setIsBatchDeleteModalOpen(false);
+        fetchDriveFiles();
+      } else {
+        const data = await res.json();
+        addToast("danger", "Delete Failed", data.error || "Failed to delete files.");
+      }
+    } catch {
+      addToast("danger", "Delete Error", "Could not connect to database.");
+    } finally {
+      setIsDeletingBatch(false);
+    }
+  };
+
+  const handleDownloadSelectedZip = async () => {
+    if (selectedFileIds.length === 0 || isDownloadingZip) return;
+    setIsDownloadingZip(true);
+    addToast("success", "Preparing Archive", `Zipping ${selectedFileIds.length} ${selectedFileIds.length === 1 ? "file" : "files"}...`);
+
+    try {
+      const res = await fetch("/api/drive/zip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileIds: selectedFileIds }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        addToast("danger", "Download Failed", err.error || "Failed to generate ZIP archive.");
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const disposition = res.headers.get("Content-Disposition");
+      let filename = `swosh-drive-${new Date().toISOString().slice(0, 10)}.zip`;
+      if (disposition && disposition.includes("filename=")) {
+        const match = disposition.match(/filename="?([^"]+)"?/);
+        if (match && match[1]) filename = decodeURIComponent(match[1]);
+      }
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      addToast("success", "Archive Ready", `"${filename}" has been downloaded.`);
+    } catch (err) {
+      console.error("ZIP download error:", err);
+      addToast("danger", "Download Error", "Failed to download ZIP archive.");
+    } finally {
+      setIsDownloadingZip(false);
+    }
+  };
+
+  const handleDownloadFolderZip = async (folderId: string, folderName: string) => {
+    if (isDownloadingZip) return;
+    setIsDownloadingZip(true);
+    setZippingTargetId(folderId);
+    addToast("success", "Preparing Folder", `Zipping folder "${folderName}" and all contents...`);
+
+    try {
+      const res = await fetch(`/api/drive/zip?folderId=${encodeURIComponent(folderId)}`);
+
+      if (!res.ok) {
+        const err = await res.json();
+        addToast("danger", "Download Failed", err.error || "Failed to generate folder ZIP.");
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const disposition = res.headers.get("Content-Disposition");
+      let filename = `${folderName}.zip`;
+      if (disposition && disposition.includes("filename=")) {
+        const match = disposition.match(/filename="?([^"]+)"?/);
+        if (match && match[1]) filename = decodeURIComponent(match[1]);
+      }
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      addToast("success", "Folder Ready", `"${filename}" has been downloaded.`);
+    } catch (err) {
+      console.error("Folder ZIP download error:", err);
+      addToast("danger", "Download Error", "Failed to download folder ZIP archive.");
+    } finally {
+      setIsDownloadingZip(false);
+      setZippingTargetId(null);
+    }
+  };
+
 
   const handleDriveFileMail = (file: FileItem) => {
     if (!attachedDriveFiles.some((f) => f.id === file.id)) {
@@ -1052,23 +1196,50 @@ export default function Home() {
 
             {/* Breadcrumb Navigation Trail */}
             <div className="breadcrumbs-bar">
-              <span
-                className={`breadcrumb-item ${currentFolderId === "root" ? "active" : ""}`}
-                onClick={() => currentFolderId !== "root" && setCurrentFolderId("root")}
-              >
-                <CloudIcon size={16} /> Drive
-              </span>
-              {breadcrumbs.map((crumb, index) => (
-                <span key={crumb.id} style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
-                  <ChevronRightIcon size={14} className="breadcrumb-separator" />
-                  <span
-                    className={`breadcrumb-item ${index === breadcrumbs.length - 1 ? "active" : ""}`}
-                    onClick={() => index !== breadcrumbs.length - 1 && setCurrentFolderId(crumb.id)}
-                  >
-                    {crumb.name}
-                  </span>
+              <div className="breadcrumbs-trail">
+                <span
+                  className={`breadcrumb-item ${currentFolderId === "root" ? "active" : ""}`}
+                  onClick={() => currentFolderId !== "root" && setCurrentFolderId("root")}
+                >
+                  <CloudIcon size={16} /> Drive
                 </span>
-              ))}
+                {breadcrumbs.map((crumb, index) => (
+                  <span key={crumb.id} style={{ display: "inline-flex", alignItems: "center", gap: "8px" }}>
+                    <ChevronRightIcon size={14} className="breadcrumb-separator" />
+                    <span
+                      className={`breadcrumb-item ${index === breadcrumbs.length - 1 ? "active" : ""}`}
+                      onClick={() => index !== breadcrumbs.length - 1 && setCurrentFolderId(crumb.id)}
+                    >
+                      {crumb.name}
+                    </span>
+                  </span>
+                ))}
+              </div>
+
+              {currentFolderId !== "root" && (
+                <button
+                  type="button"
+                  className="btn-download-folder"
+                  title="Download this folder and all contents as ZIP"
+                  onClick={() => {
+                    const currentFolderName = breadcrumbs.length > 0 ? breadcrumbs[breadcrumbs.length - 1].name : "folder";
+                    handleDownloadFolderZip(currentFolderId, currentFolderName);
+                  }}
+                  disabled={isDownloadingZip}
+                >
+                  {isDownloadingZip && zippingTargetId === currentFolderId ? (
+                    <>
+                      <div className="spinner-sm" />
+                      <span>Zipping...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ArchiveIcon size={14} />
+                      <span>Download Folder (.zip)</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
 
             {/* Dropzone file upload */}
@@ -1098,6 +1269,67 @@ export default function Home() {
                 </div>
                 <div className="progress-bar-wrapper">
                   <div className="progress-bar-fill" style={{ width: `${driveUploadProgress}%` }}></div>
+                </div>
+              </div>
+            )}
+
+            {/* Selection Action Toolbar */}
+            {selectedFileIds.length > 0 && (
+              <div className="drive-selection-toolbar">
+                <div className="selection-info-group">
+                  <span className="selection-count-badge">{selectedFileIds.length}</span>
+                  <span className="selection-text">
+                    {selectedFileIds.length === 1 ? "1 file selected" : `${selectedFileIds.length} files selected`}
+                  </span>
+                  <button
+                    type="button"
+                    className="selection-text-btn"
+                    onClick={toggleSelectAll}
+                  >
+                    {filteredDriveFiles.length > 0 && filteredDriveFiles.every((f) => selectedFileIds.includes(f.id))
+                      ? "Deselect all"
+                      : "Select all"}
+                  </button>
+                </div>
+                <div className="selection-actions-group">
+                  <button
+                    type="button"
+                    className="btn-secondary selection-btn"
+                    onClick={handleDownloadSelectedZip}
+                    disabled={isDownloadingZip}
+                    title="Download selected files as a ZIP archive"
+                  >
+                    {isDownloadingZip && !zippingTargetId ? (
+                      <>
+                        <div className="spinner-sm" />
+                        <span>Zipping...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ArchiveIcon size={15} />
+                        <span>Download ZIP</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-danger selection-btn"
+                    onClick={() => setIsBatchDeleteModalOpen(true)}
+                    disabled={isDeletingBatch}
+                    title="Delete selected files"
+                  >
+                    <TrashIcon size={15} />
+                    <span>Delete ({selectedFileIds.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="selection-btn-close"
+                    title="Clear selection"
+                    aria-label="Clear selection"
+                    onClick={clearSelection}
+                  >
+                    <CloseIcon size={16} />
+                  </button>
                 </div>
               </div>
             )}
@@ -1134,18 +1366,37 @@ export default function Home() {
                         {folder.name}
                       </span>
                     </div>
-                    <button
-                      type="button"
-                      className="folder-delete-btn"
-                      title="Delete folder and contents"
-                      aria-label={`Delete folder ${folder.name}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setFolderToDelete({ id: folder.id, name: folder.name });
-                      }}
-                    >
-                      <TrashIcon size={14} />
-                    </button>
+                    <div className="folder-card-actions">
+                      <button
+                        type="button"
+                        className="folder-action-btn download"
+                        title="Download folder as ZIP"
+                        aria-label={`Download folder ${folder.name} as ZIP`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDownloadFolderZip(folder.id, folder.name);
+                        }}
+                        disabled={isDownloadingZip}
+                      >
+                        {isDownloadingZip && zippingTargetId === folder.id ? (
+                          <div className="spinner-sm" />
+                        ) : (
+                          <DownloadIcon size={14} />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        className="folder-action-btn delete"
+                        title="Delete folder and contents"
+                        aria-label={`Delete folder ${folder.name}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFolderToDelete({ id: folder.id, name: folder.name });
+                        }}
+                      >
+                        <TrashIcon size={14} />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1170,6 +1421,25 @@ export default function Home() {
                   <table className="drive-table">
                     <thead>
                       <tr>
+                        <th className="drive-col-select">
+                          <input
+                            type="checkbox"
+                            className="drive-checkbox"
+                            checked={
+                              filteredDriveFiles.length > 0 &&
+                              filteredDriveFiles.every((f) => selectedFileIds.includes(f.id))
+                            }
+                            ref={(el) => {
+                              if (el) {
+                                const count = filteredDriveFiles.filter((f) => selectedFileIds.includes(f.id)).length;
+                                el.indeterminate = count > 0 && count < filteredDriveFiles.length;
+                              }
+                            }}
+                            onChange={toggleSelectAll}
+                            title="Select all"
+                            aria-label="Select all files"
+                          />
+                        </th>
                         <th>Name</th>
                         <th>Size</th>
                         <th>Uploaded</th>
@@ -1178,7 +1448,19 @@ export default function Home() {
                     </thead>
                     <tbody>
                       {filteredDriveFiles.map((file) => (
-                        <tr key={file.id} className="drive-file-row">
+                        <tr
+                          key={file.id}
+                          className={`drive-file-row ${selectedFileIds.includes(file.id) ? "selected" : ""}`}
+                        >
+                          <td className="drive-col-select" onClick={(e) => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              className="drive-checkbox"
+                              checked={selectedFileIds.includes(file.id)}
+                              onChange={() => toggleSelectFile(file.id)}
+                              aria-label={`Select ${file.name}`}
+                            />
+                          </td>
                           <td className="drive-col-name">
                             <div className="drive-file-main-info">
                               <span className="drive-file-icon-badge"><FileIcon size={18} /></span>
@@ -1186,6 +1468,7 @@ export default function Home() {
                                 <span className="drive-file-name" title={file.name}>
                                   {file.name}
                                 </span>
+
                                 <span className="drive-mobile-meta">
                                   {formatBytes(parseInt(file.size))} &bull; {new Date(file.uploaded_at).toLocaleDateString()}
                                 </span>
@@ -1426,6 +1709,80 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {/* MODAL: Batch Delete Confirmation */}
+      {isBatchDeleteModalOpen && (
+        <div className="modal-overlay" onClick={() => !isDeletingBatch && setIsBatchDeleteModalOpen(false)}>
+          <div className="modal-content glass-panel" style={{ maxWidth: "440px" }} onClick={(e) => e.stopPropagation()}>
+            <header className="modal-header">
+              <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--danger)" }}>
+                <TrashIcon size={18} /> Delete Selected Files
+              </h3>
+              <button
+                type="button"
+                className="btn-remove"
+                style={{ padding: "6px" }}
+                onClick={() => setIsBatchDeleteModalOpen(false)}
+                disabled={isDeletingBatch}
+                title="Close"
+                aria-label="Close modal"
+              >
+                <CloseIcon size={16} />
+              </button>
+            </header>
+            <div className="modal-body" style={{ padding: "16px 0" }}>
+              <p style={{ marginBottom: "12px", fontSize: "14px", lineHeight: 1.5 }}>
+                Are you sure you want to delete <strong>{selectedFileIds.length} {selectedFileIds.length === 1 ? "file" : "files"}</strong>?
+              </p>
+              <div className="batch-delete-preview-list">
+                {driveFiles
+                  .filter((f) => selectedFileIds.includes(f.id))
+                  .slice(0, 5)
+                  .map((f) => (
+                    <div key={f.id} className="batch-delete-item">
+                      <span className="batch-delete-icon"><FileIcon size={14} /></span>
+                      <span className="batch-delete-name" title={f.name}>{f.name}</span>
+                      <span className="batch-delete-size">{formatBytes(parseInt(f.size))}</span>
+                    </div>
+                  ))}
+                {selectedFileIds.length > 5 && (
+                  <div className="batch-delete-overflow">
+                    +{selectedFileIds.length - 5} more files selected
+                  </div>
+                )}
+              </div>
+              <p style={{ fontSize: "13px", color: "var(--text-muted)", marginTop: "12px", lineHeight: 1.5 }}>
+                These files will be permanently removed from your Swosh Drive. This action cannot be undone.
+              </p>
+            </div>
+            <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "15px" }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: "10px 16px" }}
+                onClick={() => setIsBatchDeleteModalOpen(false)}
+                disabled={isDeletingBatch}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ background: "var(--danger)", padding: "10px 16px", width: "auto" }}
+                onClick={confirmBatchDelete}
+                disabled={isDeletingBatch}
+              >
+                {isDeletingBatch ? (
+                  <div className="spinner"></div>
+                ) : (
+                  `Delete ${selectedFileIds.length} ${selectedFileIds.length === 1 ? "File" : "Files"}`
+                )}
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
 
       {/* MODAL: Folder Upload Decision */}
       {folderUploadPending && (
