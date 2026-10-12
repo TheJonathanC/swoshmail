@@ -55,16 +55,37 @@ export async function POST(request: Request) {
     // IDs of files already in Swosh Drive to attach
     const driveFileIds = formData.getAll("driveFileIds") as string[];
 
-    const smtpUser = process.env.EMAIL_USER;
-    const smtpPass = process.env.EMAIL_PASS;
-    const smtpHost = process.env.SMTP_HOST || "smtp.gmail.com";
-    const smtpPort = parseInt(process.env.SMTP_PORT || "465");
-    const defaultTo = process.env.EMAIL_TO || smtpUser;
-    const emailTo = customTo || defaultTo;
+    const rawSmtpUser = process.env.EMAIL_USER;
+    const rawSmtpPass = process.env.EMAIL_PASS;
+    const rawSmtpHost = process.env.SMTP_HOST || "smtp.gmail.com";
+    const rawSmtpPort = parseInt(process.env.SMTP_PORT || "465", 10);
+
+    // Sanitize credentials (trim spaces, remove accidental outer quotes, strip all internal spaces from app password)
+    const smtpUser = rawSmtpUser ? rawSmtpUser.replace(/["']/g, "").trim() : "";
+    const smtpPass = rawSmtpPass ? rawSmtpPass.replace(/["']/g, "").replace(/\s+/g, "").trim() : "";
+    const smtpHost = rawSmtpHost.replace(/["']/g, "").trim();
+    const smtpPort = isNaN(rawSmtpPort) ? 465 : rawSmtpPort;
+
+    const defaultTo = process.env.EMAIL_TO ? process.env.EMAIL_TO.replace(/["']/g, "").trim() : smtpUser;
+    const emailTo = (customTo?.trim() || defaultTo);
 
     if (!smtpUser || !smtpPass || !emailTo) {
+      const missing: string[] = [];
+      if (!smtpUser) missing.push("EMAIL_USER");
+      if (!smtpPass) missing.push("EMAIL_PASS");
+      if (!emailTo) missing.push("recipient email");
       return NextResponse.json(
-        { error: "Server configuration error: Email settings are incomplete." },
+        { error: `Server configuration error: Missing required email setting(s): ${missing.join(", ")}. Ensure these are configured in your environment.` },
+        { status: 500 }
+      );
+    }
+
+    // Gmail App Passwords are strictly 16 alphabetical characters
+    if (smtpHost.toLowerCase().includes("gmail.com") && smtpPass.length !== 16) {
+      return NextResponse.json(
+        { 
+          error: `Invalid App Password format: Gmail App Passwords must be exactly 16 characters (detected ${smtpPass.length}). If you entered your normal Google account password, Google blocks it for SMTP. Please generate a 16-character App Password at https://myaccount.google.com/apppasswords.` 
+        },
         { status: 500 }
       );
     }
@@ -179,15 +200,21 @@ export async function POST(request: Request) {
     const fileNamesText = loggedAttachments.map(a => a.name).join(", ");
     const finalBody = bodyText || (attachments.length > 0 ? `Sent attachments: ${fileNamesText}` : "Empty message body.");
 
+    const isPort465 = smtpPort === 465;
     const transporter = nodemailer.createTransport({
       host: smtpHost,
       port: smtpPort,
-      secure: smtpPort === 465,
+      secure: isPort465,
+      requireTLS: !isPort465,
       auth: {
         user: smtpUser,
         pass: smtpPass,
       },
-    });
+      family: 4, // Force IPv4 to prevent connection drops/rejections on IPv6-enabled servers
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 20000,
+    } as any);
 
     await transporter.sendMail({
       from: `"Swoshmail" <${smtpUser}>`,
@@ -223,8 +250,29 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, message: "Email sent successfully!" });
   } catch (error: any) {
     console.error("POST send mail error:", error);
+    let errorMessage = error.message || "Failed to dispatch email.";
+
+    // Provide friendly, actionable diagnostics for common SMTP failure modes
+    if (
+      error.code === "EAUTH" ||
+      error.responseCode === 535 ||
+      errorMessage.includes("535") ||
+      errorMessage.includes("Username and Password not accepted")
+    ) {
+      errorMessage =
+        "Gmail authentication failed (535): Invalid login credentials. Please verify that: 1) EMAIL_USER matches the exact Google account that generated the App Password, 2) EMAIL_PASS is a 16-character App Password (not your regular Google account password), 3) 2-Step Verification is active on the Google account, and 4) You restarted your server / redeployed after updating .env.";
+    } else if (
+      error.code === "ETIMEDOUT" ||
+      error.code === "ESOCKETTIMEDOUT" ||
+      errorMessage.includes("ETIMEDOUT")
+    ) {
+      errorMessage = `SMTP connection timed out connecting to ${process.env.SMTP_HOST || "smtp.gmail.com"}. Your host or network might block outbound SMTP. Try setting SMTP_PORT=587 in your environment.`;
+    } else if (error.code === "ECONNREFUSED") {
+      errorMessage = `Connection refused by SMTP server. Please verify your SMTP_HOST and SMTP_PORT settings.`;
+    }
+
     return NextResponse.json(
-      { error: error.message || "Failed to dispatch email." },
+      { error: errorMessage },
       { status: 500 }
     );
   }

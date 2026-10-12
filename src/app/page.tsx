@@ -6,8 +6,9 @@ import dynamic from "next/dynamic";
 import { 
   FolderIcon, FileIcon, CloudIcon, TrashIcon, DownloadIcon, EyeIcon, 
   MailIcon, UploadIcon, ChevronRightIcon, SearchIcon, PaperclipIcon, PlusIcon, MessageIcon, CheckIcon, CloseIcon,
-  AlertCircleIcon, LockIcon, RefreshCwIcon, FilesIcon, ArchiveIcon
+  AlertCircleIcon, LockIcon, RefreshCwIcon, FilesIcon, ArchiveIcon, EditIcon, SaveIcon, FileTextIcon
 } from "@/components/Icons";
+
 
 
 const ChatPanel = dynamic(() => import("@/components/ChatPanel"), { ssr: false });
@@ -102,6 +103,17 @@ export default function Home() {
   const [previewContent, setPreviewContent] = useState("");
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
 
+  // Text Note / Snippet Editor state
+  const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
+  const [editingNoteFile, setEditingNoteFile] = useState<FileItem | null>(null);
+  const [noteName, setNoteName] = useState("notes.txt");
+  const [initialNoteName, setInitialNoteName] = useState("notes.txt");
+  const [noteContent, setNoteContent] = useState("");
+  const [initialNoteContent, setInitialNoteContent] = useState("");
+  const [isSavingNote, setIsSavingNote] = useState(false);
+  const [isLoadingNoteContent, setIsLoadingNoteContent] = useState(false);
+  const [isDiscardModalOpen, setIsDiscardModalOpen] = useState(false);
+
   // Toast State
   const [toasts, setToasts] = useState<Toast[]>([]);
 
@@ -109,6 +121,8 @@ export default function Home() {
   const mailFileInputRef = useRef<HTMLInputElement>(null);
   const driveFileInputRef = useRef<HTMLInputElement>(null);
   const driveFolderInputRef = useRef<HTMLInputElement>(null);
+  const noteTextareaRef = useRef<HTMLTextAreaElement>(null);
+
 
   // Update document title based on active module
   useEffect(() => {
@@ -719,6 +733,178 @@ export default function Home() {
     }
   };
 
+  const isEditable = (fileName: string) => {
+    const ext = fileName.split(".").pop()?.toLowerCase() || "";
+    return [
+      "txt", "md", "log", "json", "css", "js", "ts", "jsx", "tsx", "html", "xml", "csv", "sql", "yaml", "yml", "env", "conf", "ini", "sh"
+    ].includes(ext);
+  };
+
+  const handleOpenNewNote = () => {
+    setEditingNoteFile(null);
+    setNoteName("notes.txt");
+    setInitialNoteName("notes.txt");
+    setNoteContent("");
+    setInitialNoteContent("");
+    setIsNoteModalOpen(true);
+    setTimeout(() => {
+      noteTextareaRef.current?.focus();
+    }, 120);
+  };
+
+  const handleOpenEditNote = async (file: FileItem, existingContent?: string) => {
+    setEditingNoteFile(file);
+    setNoteName(file.name);
+    setInitialNoteName(file.name);
+    setIsNoteModalOpen(true);
+
+    if (typeof existingContent === "string") {
+      setNoteContent(existingContent);
+      setInitialNoteContent(existingContent);
+      setIsLoadingNoteContent(false);
+      setTimeout(() => {
+        noteTextareaRef.current?.focus();
+      }, 120);
+      return;
+    }
+
+    setIsLoadingNoteContent(true);
+    setNoteContent("");
+    setInitialNoteContent("");
+    try {
+      const res = await fetch(`/api/drive/preview?key=${encodeURIComponent(file.key)}`);
+      if (res.ok) {
+        const data = await res.json();
+        const content = data.content || "";
+        setNoteContent(content);
+        setInitialNoteContent(content);
+        setTimeout(() => {
+          noteTextareaRef.current?.focus();
+        }, 120);
+      } else {
+        addToast("danger", "Fetch Error", "Could not load file content for editing.");
+      }
+    } catch {
+      addToast("danger", "Network Error", "Could not connect to server to load file.");
+    } finally {
+      setIsLoadingNoteContent(false);
+    }
+  };
+
+  const handleSaveNote = async () => {
+    if (isSavingNote) return;
+
+    let sanitizedName = noteName.trim();
+    if (!sanitizedName) {
+      sanitizedName = editingNoteFile ? editingNoteFile.name : "notes.txt";
+    }
+    if (!sanitizedName.includes(".")) {
+      sanitizedName += ".txt";
+    }
+
+    setIsSavingNote(true);
+
+    try {
+      const payload: {
+        fileId?: string;
+        name: string;
+        content: string;
+        folderId?: string;
+      } = {
+        name: sanitizedName,
+        content: noteContent,
+      };
+
+      if (editingNoteFile) {
+        payload.fileId = editingNoteFile.id;
+      } else {
+        payload.folderId = currentFolderId;
+      }
+
+      const res = await fetch("/api/drive/text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data.success) {
+        const savedFile: FileItem = data.file;
+        const isUpdate = !!editingNoteFile;
+        addToast(
+          "success",
+          isUpdate ? "Note Updated" : "Note Saved",
+          `"${savedFile.name}" has been saved.`
+        );
+
+        setNoteName(savedFile.name);
+        setInitialNoteName(savedFile.name);
+        setInitialNoteContent(noteContent);
+        setEditingNoteFile(savedFile);
+
+        setDriveFiles((prev) => {
+          if (isUpdate) {
+            return prev.map((f) => (f.id === savedFile.id ? savedFile : f));
+          }
+          return [savedFile, ...prev.filter((f) => f.id !== savedFile.id)];
+        });
+
+        // Background update of storage quota
+        fetchDriveFiles();
+      } else {
+        addToast("danger", "Save Failed", data.error || "Could not save text file.");
+      }
+    } catch (err) {
+      console.error("Save note error:", err);
+      addToast("danger", "Network Error", "Failed to connect to server.");
+    } finally {
+      setIsSavingNote(false);
+    }
+  };
+
+  const handleRequestCloseNote = () => {
+    const isDirty = noteContent !== initialNoteContent || noteName !== initialNoteName;
+    if (isDirty) {
+      setIsDiscardModalOpen(true);
+    } else {
+      setIsNoteModalOpen(false);
+      setEditingNoteFile(null);
+    }
+  };
+
+  const handleConfirmDiscard = () => {
+    setIsDiscardModalOpen(false);
+    setIsNoteModalOpen(false);
+    setEditingNoteFile(null);
+    setNoteContent("");
+    setInitialNoteContent("");
+  };
+
+  const handleNoteTextareaKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+      e.preventDefault();
+      handleSaveNote();
+      return;
+    }
+
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const textarea = e.currentTarget;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const value = textarea.value;
+
+      const newValue = value.substring(0, start) + "  " + value.substring(end);
+      setNoteContent(newValue);
+
+      requestAnimationFrame(() => {
+        textarea.selectionStart = textarea.selectionEnd = start + 2;
+      });
+    }
+  };
+
+
   const handleRemoveDirectFile = (index: number) => {
     setDirectFiles((prev) => prev.filter((_, i) => i !== index));
   };
@@ -762,6 +948,7 @@ export default function Home() {
           if (mailFileInputRef.current) mailFileInputRef.current.value = "";
           if (saveToDrive) fetchDriveFiles();
         } else {
+          console.error("Mail dispatch failed:", data);
           addToast("danger", "Dispatch Failed", data.error || "Could not send email.");
         }
       } catch (err) {
@@ -1144,6 +1331,20 @@ export default function Home() {
                 <button
                   type="button"
                   className="btn-secondary drive-action-btn"
+                  onClick={handleOpenNewNote}
+                  disabled={isDriveUploading}
+                  title="Create a new text note or snippet"
+                >
+                  <FileTextIcon size={16} />
+                  <span className="drive-btn-text">
+                    <span className="drive-btn-desktop">New Note (.txt)</span>
+                    <span className="drive-btn-mobile">New Note</span>
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  className="btn-secondary drive-action-btn"
                   onClick={() => {
                     setNewFolderName("");
                     setIsCreatingFolder(true);
@@ -1151,6 +1352,7 @@ export default function Home() {
                 >
                   <PlusIcon size={16} /> <span className="drive-btn-text">New Folder</span>
                 </button>
+
 
                 <button
                   type="button"
@@ -1492,6 +1694,18 @@ export default function Home() {
                                   <EyeIcon size={16} />
                                 </button>
                               )}
+                              {isEditable(file.name) && (
+                                <button
+                                  type="button"
+                                  className="btn-icon"
+                                  title="Edit Note"
+                                  aria-label={`Edit ${file.name}`}
+                                  onClick={() => handleOpenEditNote(file)}
+                                >
+                                  <EditIcon size={16} />
+                                </button>
+                              )}
+
                               <button
                                 type="button"
                                 className="btn-icon"
@@ -1992,6 +2206,219 @@ export default function Home() {
         </div>
       )}
 
+      {/* MODAL: Text Note / Snippet Editor */}
+      {isNoteModalOpen && (
+        <div
+          className="modal-overlay"
+          onClick={() => !isSavingNote && handleRequestCloseNote()}
+        >
+          <div
+            className="note-editor-modal glass-panel"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <header className="note-editor-header">
+              <div className="note-title-container">
+                <span className="note-icon-badge">
+                  <FileTextIcon size={18} />
+                </span>
+                <input
+                  type="text"
+                  className="note-filename-input"
+                  value={noteName}
+                  onChange={(e) => setNoteName(e.target.value)}
+                  placeholder="notes.txt"
+                  disabled={isSavingNote}
+                  title="Click to rename note"
+                />
+                <span className="note-ext-badge">
+                  {noteName.includes(".") ? noteName.split(".").pop() : "txt"}
+                </span>
+              </div>
+
+              <div className="note-header-actions">
+                {noteContent !== initialNoteContent || noteName !== initialNoteName ? (
+                  <span className="note-status-badge dirty">
+                    Unsaved changes
+                  </span>
+                ) : (
+                  <span className="note-status-badge clean">
+                    <CheckIcon size={13} /> Saved
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="btn-remove"
+                  style={{ padding: "6px" }}
+                  onClick={handleRequestCloseNote}
+                  disabled={isSavingNote}
+                  title="Close editor"
+                  aria-label="Close editor"
+                >
+                  <CloseIcon size={16} />
+                </button>
+              </div>
+            </header>
+
+            {/* Toolbar / Metadata */}
+            <div className="note-toolbar">
+              <div className="note-stats-group">
+                <span className="note-stat-item">
+                  <strong>{noteContent ? noteContent.split("\n").length : 0}</strong> lines
+                </span>
+                <span>&bull;</span>
+                <span className="note-stat-item">
+                  <strong>{noteContent.trim() ? noteContent.trim().split(/\s+/).length : 0}</strong> words
+                </span>
+                <span>&bull;</span>
+                <span className="note-stat-item">
+                  <strong>{noteContent.length}</strong> chars
+                </span>
+                <span>&bull;</span>
+                <span className="note-stat-item">
+                  {formatBytes(new Blob([noteContent]).size)}
+                </span>
+              </div>
+
+              <div className="note-shortcuts-group">
+                <span>
+                  <kbd className="note-shortcut-kbd">Ctrl+S</kbd> save
+                </span>
+                <span>
+                  <kbd className="note-shortcut-kbd">Tab</kbd> indent
+                </span>
+              </div>
+            </div>
+
+            {/* Editor Textarea */}
+            <div className="note-textarea-container">
+              {isLoadingNoteContent ? (
+                <div className="empty-state" style={{ margin: "auto", padding: "40px" }}>
+                  <div className="spinner" style={{ margin: "0 auto 12px auto" }}></div>
+                  <p>Loading note content...</p>
+                </div>
+              ) : (
+                <textarea
+                  ref={noteTextareaRef}
+                  className="note-textarea"
+                  value={noteContent}
+                  onChange={(e) => setNoteContent(e.target.value)}
+                  onKeyDown={handleNoteTextareaKeyDown}
+                  placeholder="Type your notes, code snippets, or thoughts here... (Press Ctrl+S / ⌘S to save)"
+                  disabled={isSavingNote}
+                  spellCheck={false}
+                />
+              )}
+            </div>
+
+            {/* Footer */}
+            <footer className="note-editor-footer">
+              <div className="note-footer-meta">
+                <CloudIcon size={14} />
+                <span>
+                  Location: {currentFolderId === "root" ? "Drive Root" : breadcrumbs[breadcrumbs.length - 1]?.name || "Folder"}
+                </span>
+              </div>
+
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ padding: "8px 16px" }}
+                  onClick={handleRequestCloseNote}
+                  disabled={isSavingNote}
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  style={{ padding: "8px 18px", width: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                  onClick={handleSaveNote}
+                  disabled={isSavingNote || isLoadingNoteContent}
+                >
+                  {isSavingNote ? (
+                    <>
+                      <div className="spinner-sm" />
+                      <span>Saving...</span>
+                    </>
+                  ) : (
+                    <>
+                      <SaveIcon size={15} />
+                      <span>{editingNoteFile ? "Save Changes" : "Save Note"}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Discard Unsaved Changes Confirmation */}
+      {isDiscardModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsDiscardModalOpen(false)}>
+          <div
+            className="modal-content glass-panel"
+            style={{ maxWidth: "420px" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="modal-header">
+              <h3
+                className="modal-title"
+                style={{ display: "flex", alignItems: "center", gap: "8px", color: "#f59e0b" }}
+              >
+                <AlertCircleIcon size={18} /> Discard Unsaved Changes?
+              </h3>
+              <button
+                type="button"
+                className="btn-remove"
+                style={{ padding: "6px" }}
+                onClick={() => setIsDiscardModalOpen(false)}
+                title="Close"
+              >
+                <CloseIcon size={16} />
+              </button>
+            </header>
+            <div className="modal-body" style={{ padding: "16px 0 20px 0" }}>
+              <p style={{ fontSize: "14px", lineHeight: 1.5, marginBottom: "8px" }}>
+                You have unsaved changes in <strong>&ldquo;{noteName}&rdquo;</strong>.
+              </p>
+              <p style={{ fontSize: "13px", color: "var(--text-muted)", lineHeight: 1.5 }}>
+                Are you sure you want to close without saving? Any unsaved edits will be lost.
+              </p>
+            </div>
+            <footer
+              className="modal-footer"
+              style={{
+                borderTop: "1px solid rgba(255, 255, 255, 0.05)",
+                paddingTop: "15px",
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: "10px",
+              }}
+            >
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: "8px 16px" }}
+                onClick={() => setIsDiscardModalOpen(false)}
+              >
+                Keep Editing
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ background: "var(--danger)", padding: "8px 16px", width: "auto" }}
+                onClick={handleConfirmDiscard}
+              >
+                Discard & Close
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
       {/* MODAL: File Previewer */}
       {previewFile && (
         <div className="modal-overlay" onClick={() => setPreviewFile(null)}>
@@ -2049,6 +2476,21 @@ export default function Home() {
               <span style={{ fontSize: "12px", color: "var(--text-muted)", marginRight: "auto", display: "flex", alignSelf: "center" }}>
                 Size: {formatBytes(parseInt(previewFile.size))}
               </span>
+              {isEditable(previewFile.name) && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  style={{ width: "auto", padding: "8px 14px", fontSize: "13px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                  onClick={() => {
+                    const targetFile = previewFile;
+                    const content = previewContent;
+                    setPreviewFile(null);
+                    handleOpenEditNote(targetFile, content);
+                  }}
+                >
+                  <EditIcon size={15} /> Edit Note
+                </button>
+              )}
               <a
                 href={previewFile.url}
                 className="btn-primary"
@@ -2058,6 +2500,7 @@ export default function Home() {
                 <DownloadIcon size={16} /> Download File
               </a>
             </footer>
+
           </div>
         </div>
       )}
