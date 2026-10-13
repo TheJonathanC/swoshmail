@@ -300,8 +300,86 @@ body {
   border-color: rgba(255, 255, 255, 0.15);
 }
 
+/* Swosh Mail Maintenance / Downtime Banner */
+.mail-maintenance-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 22px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25), 0 0 25px rgba(245, 158, 11, 0.05);
+  animation: fadeIn 0.25s ease-out;
+}
+
+.mail-maintenance-icon {
+  color: #f59e0b;
+  display: inline-flex;
+  padding: 7px;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  border-radius: 9px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.mail-maintenance-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.mail-maintenance-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.mail-maintenance-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: #fef3c7;
+  letter-spacing: -0.01em;
+}
+
+.mail-maintenance-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #fde68a;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.mail-maintenance-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 8px #f59e0b;
+  animation: pulseGlow 1.5s infinite ease-in-out;
+}
+
+.mail-maintenance-desc {
+  font-size: 13px;
+  line-height: 1.55;
+  color: #d1d5db;
+}
+
 /* Mail Attachment Buttons Row */
 .attachment-buttons-row {
+
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1465,7 +1543,48 @@ body {
   cursor: pointer;
 }
 
+/* Chat Date Separators and Timestamps */
+.chat-date-separator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 12px 0 6px 0;
+  width: 100%;
+}
+
+.chat-date-pill {
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 12px;
+  border-radius: 20px;
+  letter-spacing: 0.02em;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.chat-bubble-timestamp {
+  font-size: 10px;
+  opacity: 0.75;
+  margin-top: 5px;
+  text-align: right;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  cursor: default;
+}
+
+.chat-timestamp-date {
+  opacity: 0.85;
+  font-weight: 500;
+}
+
 /* Chat Editing Banner */
+
 .chat-editing-banner {
   display: flex;
   align-items: center;
@@ -1843,7 +1962,7 @@ body {
   align-items: center;
   flex-wrap: wrap;
   margin-bottom: 20px;
-  gap: 12px;
+  gap: 14px;
 }
 
 .drive-title-row {
@@ -1867,24 +1986,31 @@ body {
 
 .drive-actions-group {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 .drive-action-btn {
-  padding: 10px 18px;
+  padding: 8px 14px;
+  height: 38px;
   white-space: nowrap !important;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  font-size: 13.5px;
+  gap: 7px;
+  font-size: 13px;
   font-weight: 600;
-  border-radius: 10px;
+  border-radius: 9px;
   flex-shrink: 0;
   width: auto !important;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+.drive-action-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
 
 .drive-btn-text {
   white-space: nowrap;
@@ -2610,19 +2736,22 @@ body {
   }
 
   .drive-actions-group {
-    flex-wrap: wrap !important;
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 8px !important;
+    width: 100% !important;
   }
 
   .drive-action-btn {
-    font-size: 12px !important;
-    padding: 8px 8px !important;
-    gap: 5px !important;
-    flex: 1 1 calc(50% - 4px) !important;
+    width: 100% !important;
+    flex: none !important;
+    font-size: 12.5px !important;
+    padding: 8px 10px !important;
+    height: 38px !important;
+    gap: 6px !important;
+    border-radius: 9px !important;
   }
 
-  .drive-action-btn:last-child {
-    flex: 1 1 calc(50% - 4px) !important;
-  }
 
   .drive-btn-desktop {
     display: none !important;
@@ -2887,6 +3016,265 @@ body {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* ==========================================================
+   Swosh Drive File Sharing System
+   ========================================================== */
+
+.share-modal-content {
+  max-width: 480px;
+}
+
+.share-icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--primary);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  flex-shrink: 0;
+}
+
+.share-target-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.share-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.share-target-details {
+  min-width: 0;
+  flex: 1;
+}
+
+.share-target-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-target-meta {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.share-loading-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.share-input-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.share-url-input {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+  padding: 9px 12px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #e2e8f0;
+  flex: 1;
+  min-width: 0;
+}
+
+.share-copy-btn {
+  padding: 9px 16px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  width: auto !important;
+}
+
+.share-copy-btn.copied {
+  background: var(--success);
+  border-color: var(--success);
+  box-shadow: 0 0 15px rgba(16, 185, 129, 0.35);
+}
+
+.share-security-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 16px;
+}
+
+.share-notice-icon {
+  color: var(--primary);
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.share-notice-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #cbd5e1;
+}
+
+/* Recipient Shared View Modal */
+.shared-view-modal {
+  max-width: 580px;
+}
+
+.shared-file-banner-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+
+.shared-file-banner-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.shared-file-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-error-box {
+  text-align: center;
+  padding: 24px 16px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 12px;
+}
+
+/* Auth Banner for Shared Files */
+.auth-shared-file-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 20px;
+  text-align: left;
+}
+
+.auth-shared-icon {
+  color: var(--primary);
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.auth-shared-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.auth-shared-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 2px;
+}
+
+.auth-shared-desc {
+  font-size: 12px;
+  color: #cbd5e1;
+  line-height: 1.4;
+}
+
+.shared-file-banner-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 3px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.shared-sender-badge {
+  color: var(--primary);
+  background: rgba(99, 102, 241, 0.12);
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.shared-preview-container {
+  margin-top: 16px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.25);
+  max-height: 260px;
+}
+
+.shared-preview-image {
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  display: block;
+}
+
+.shared-preview-text {
+  padding: 14px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e2e8f0;
+  max-height: 260px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+
 
 
 

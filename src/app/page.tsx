@@ -6,8 +6,10 @@ import dynamic from "next/dynamic";
 import { 
   FolderIcon, FileIcon, CloudIcon, TrashIcon, DownloadIcon, EyeIcon, 
   MailIcon, UploadIcon, ChevronRightIcon, SearchIcon, PaperclipIcon, PlusIcon, MessageIcon, CheckIcon, CloseIcon,
-  AlertCircleIcon, LockIcon, RefreshCwIcon, FilesIcon, ArchiveIcon, EditIcon, SaveIcon, FileTextIcon
+  AlertCircleIcon, LockIcon, RefreshCwIcon, FilesIcon, ArchiveIcon, EditIcon, SaveIcon, FileTextIcon,
+  ShareIcon, LinkIcon
 } from "@/components/Icons";
+
 
 
 
@@ -30,6 +32,14 @@ interface FileItem {
   owner_id: string;
   uploaded_at: string;
   folder_id: string | null;
+}
+
+interface SharedFileInfo {
+  id: string;
+  name: string;
+  size: number;
+  uploaded_at: string;
+  owner_username: string;
 }
 
 interface Toast {
@@ -113,6 +123,24 @@ export default function Home() {
   const [isSavingNote, setIsSavingNote] = useState(false);
   const [isLoadingNoteContent, setIsLoadingNoteContent] = useState(false);
   const [isDiscardModalOpen, setIsDiscardModalOpen] = useState(false);
+
+  // File Share state (Owner sharing a file)
+  const [shareFileTarget, setShareFileTarget] = useState<FileItem | null>(null);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [shareToken, setShareToken] = useState<string | null>(null);
+  const [shareUrl, setShareUrl] = useState<string>("");
+  const [isGeneratingShare, setIsGeneratingShare] = useState(false);
+  const [hasCopiedShareUrl, setHasCopiedShareUrl] = useState(false);
+
+  // Shared Link state (Recipient accessing a shared file via ?share=token)
+  const [sharedParamToken, setSharedParamToken] = useState<string | null>(null);
+  const [sharedFileInfo, setSharedFileInfo] = useState<SharedFileInfo | null>(null);
+  const [sharedPreviewContent, setSharedPreviewContent] = useState<string | null>(null);
+  const [isSharedModalOpen, setIsSharedModalOpen] = useState(false);
+  const [isLoadingSharedFile, setIsLoadingSharedFile] = useState(false);
+  const [isSavingSharedFile, setIsSavingSharedFile] = useState(false);
+  const [isDownloadingSharedFile, setIsDownloadingSharedFile] = useState(false);
+  const [sharedFileError, setSharedFileError] = useState<string | null>(null);
 
   // Toast State
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -904,6 +932,172 @@ export default function Home() {
     }
   };
 
+  // --- File Share Handlers ---
+  const handleOpenShareModal = async (file: FileItem) => {
+    setShareFileTarget(file);
+    setIsShareModalOpen(true);
+    setShareToken(null);
+    setShareUrl("");
+    setHasCopiedShareUrl(false);
+    setIsGeneratingShare(true);
+
+    try {
+      const res = await fetch("/api/drive/share", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileId: file.id }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setShareToken(data.token);
+        const origin = window.location.origin;
+        setShareUrl(`${origin}/drive?share=${data.token}`);
+      } else {
+        const data = await res.json();
+        addToast("danger", "Share Failed", data.error || "Could not generate share link.");
+        setIsShareModalOpen(false);
+      }
+    } catch {
+      addToast("danger", "Network Error", "Could not connect to server to generate share link.");
+      setIsShareModalOpen(false);
+    } finally {
+      setIsGeneratingShare(false);
+    }
+  };
+
+  const handleCopyShareUrl = async () => {
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setHasCopiedShareUrl(true);
+      addToast("success", "Link Copied", "Private Swosh link copied to clipboard.");
+      setTimeout(() => setHasCopiedShareUrl(false), 2500);
+    } catch {
+      addToast("danger", "Copy Error", "Failed to copy link to clipboard.");
+    }
+  };
+
+  const handleCloseShareModal = () => {
+    setIsShareModalOpen(false);
+    setShareFileTarget(null);
+    setShareToken(null);
+    setShareUrl("");
+    setHasCopiedShareUrl(false);
+  };
+
+  const loadSharedFile = async (token: string) => {
+    setIsLoadingSharedFile(true);
+    setSharedFileError(null);
+    setIsSharedModalOpen(true);
+    setSharedPreviewContent(null);
+
+    try {
+      const res = await fetch(`/api/drive/share?token=${encodeURIComponent(token)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSharedFileInfo(data.file);
+
+        // Fetch inline text preview if file type is textual
+        const ext = data.file.name.split(".").pop()?.toLowerCase() || "";
+        const isText = ["txt", "log", "md", "json", "css", "js", "ts", "html", "xml", "csv", "sql", "env"].includes(ext);
+        if (isText) {
+          try {
+            const previewRes = await fetch(`/api/drive/share/preview?token=${encodeURIComponent(token)}`);
+            if (previewRes.ok) {
+              const previewData = await previewRes.json();
+              setSharedPreviewContent(previewData.content || "");
+            }
+          } catch {
+            // Preview is non-critical
+          }
+        }
+      } else {
+        const data = await res.json();
+        setSharedFileError(data.error || "Shared file is unavailable or expired.");
+      }
+    } catch {
+      setSharedFileError("Failed to connect to Swosh Drive service.");
+    } finally {
+      setIsLoadingSharedFile(false);
+    }
+  };
+
+  const handleDownloadSharedFile = () => {
+    if (!sharedParamToken) return;
+    setIsDownloadingSharedFile(true);
+    const downloadUrl = `/api/drive/share/download?token=${encodeURIComponent(sharedParamToken)}`;
+    const anchor = document.createElement("a");
+    anchor.href = downloadUrl;
+    anchor.download = sharedFileInfo?.name || "download";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    setTimeout(() => setIsDownloadingSharedFile(false), 1200);
+  };
+
+  const handleSaveSharedToDrive = async () => {
+    if (!sharedParamToken || !sharedFileInfo || isSavingSharedFile) return;
+    setIsSavingSharedFile(true);
+
+    try {
+      const res = await fetch("/api/drive/share/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: sharedParamToken,
+          targetFolderId: currentFolderId === "root" ? null : currentFolderId,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        addToast("success", "Saved to Drive", `"${data.file.name}" saved to your Swosh Drive.`);
+        fetchDriveFiles();
+        handleCloseSharedModal();
+      } else {
+        const data = await res.json();
+        addToast("danger", "Save Failed", data.error || "Could not save file to your Drive.");
+      }
+    } catch {
+      addToast("danger", "Network Error", "Could not connect to server.");
+    } finally {
+      setIsSavingSharedFile(false);
+    }
+  };
+
+  const handleCloseSharedModal = () => {
+    setIsSharedModalOpen(false);
+    setSharedFileInfo(null);
+    setSharedFileError(null);
+    setSharedPreviewContent(null);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("share");
+      window.history.replaceState({}, "", url.pathname + (url.searchParams.toString() ? `?${url.searchParams}` : ""));
+    }
+  };
+
+  // Listen for ?share= query param or route changes
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const token = params.get("share");
+      if (token) {
+        setSharedParamToken(token);
+        if (status === "authenticated") {
+          setActiveTab("drive");
+          loadSharedFile(token);
+        }
+      } else {
+        if (window.location.pathname === "/drive") {
+          setActiveTab("drive");
+        } else if (window.location.pathname === "/chat") {
+          setActiveTab("chat");
+        }
+      }
+    }
+  }, [status]);
 
   const handleRemoveDirectFile = (index: number) => {
     setDirectFiles((prev) => prev.filter((_, i) => i !== index));
@@ -1004,6 +1198,20 @@ export default function Home() {
           <h1 className="auth-title">Swoshmail Console</h1>
           <p className="auth-subtitle">Enter credentials to unlock Swoshmail Workspace.</p>
         </div>
+
+        {sharedParamToken && (
+          <div className="auth-shared-file-banner">
+            <div className="auth-shared-icon">
+              <LinkIcon size={20} />
+            </div>
+            <div className="auth-shared-content">
+              <div className="auth-shared-title">Private Swosh Drive Link</div>
+              <div className="auth-shared-desc">
+                A file has been shared with you. Sign in to your Swosh account to download or save it to your Swosh Drive.
+              </div>
+            </div>
+          </div>
+        )}
 
         <form onSubmit={handleLogin}>
           <div className="form-group">
@@ -1155,8 +1363,28 @@ export default function Home() {
         {/* MODULE: Swosh Mail tab */}
         {activeTab === "mail" && (
           <div>
+            {/* Service Maintenance Notice Banner */}
+            <div className="mail-maintenance-banner" role="status" aria-live="polite">
+              <div className="mail-maintenance-icon">
+                <AlertCircleIcon size={20} />
+              </div>
+              <div className="mail-maintenance-content">
+                <div className="mail-maintenance-header">
+                  <span className="mail-maintenance-title">Swoshmail Delivery Notice</span>
+                  <span className="mail-maintenance-badge">
+                    <span className="mail-maintenance-pulse"></span>
+                    Temporarily Offline
+                  </span>
+                </div>
+                <p className="mail-maintenance-desc">
+                  Outbound email dispatch is temporarily offline for maintenance and SMTP configuration updates. Outgoing emails cannot be delivered at this time. Swosh Drive and Swosh Chat remain fully operational.
+                </p>
+              </div>
+            </div>
+
             <h2 style={{ fontSize: "20px", fontWeight: 700, marginBottom: "20px" }}>Compose Email</h2>
             <form onSubmit={handleMailSubmit}>
+
               <div className="extra-fields" style={{ marginBottom: "20px" }}>
                 
                 <div className="form-group" style={{ marginBottom: 0 }}>
@@ -1333,13 +1561,10 @@ export default function Home() {
                   className="btn-secondary drive-action-btn"
                   onClick={handleOpenNewNote}
                   disabled={isDriveUploading}
-                  title="Create a new text note or snippet"
+                  title="Create a new text note (.txt)"
                 >
                   <FileTextIcon size={16} />
-                  <span className="drive-btn-text">
-                    <span className="drive-btn-desktop">New Note (.txt)</span>
-                    <span className="drive-btn-mobile">New Note</span>
-                  </span>
+                  <span className="drive-btn-text">New Note</span>
                 </button>
 
                 <button
@@ -1349,18 +1574,21 @@ export default function Home() {
                     setNewFolderName("");
                     setIsCreatingFolder(true);
                   }}
+                  title="Create a new folder"
                 >
-                  <PlusIcon size={16} /> <span className="drive-btn-text">New Folder</span>
+                  <PlusIcon size={16} />
+                  <span className="drive-btn-text">New Folder</span>
                 </button>
-
 
                 <button
                   type="button"
                   className="btn-secondary drive-action-btn"
                   onClick={() => driveFolderInputRef.current?.click()}
                   disabled={isDriveUploading}
+                  title="Upload a folder"
                 >
-                  <FolderIcon size={16} /> <span className="drive-btn-text">Upload Folder</span>
+                  <FolderIcon size={16} />
+                  <span className="drive-btn-text">Upload Folder</span>
                 </button>
 
                 <button
@@ -1368,6 +1596,7 @@ export default function Home() {
                   className="btn-primary drive-action-btn"
                   onClick={() => driveFileInputRef.current?.click()}
                   disabled={isDriveUploading}
+                  title="Upload files"
                 >
                   {isDriveUploading ? (
                     uploadQueueCount > 1
@@ -1375,10 +1604,12 @@ export default function Home() {
                       : "Uploading..."
                   ) : (
                     <>
-                      <UploadIcon size={16} /> <span className="drive-btn-text">Upload Files</span>
+                      <UploadIcon size={16} />
+                      <span className="drive-btn-text">Upload Files</span>
                     </>
                   )}
                 </button>
+
                 <input
                   type="file"
                   multiple
@@ -1705,6 +1936,16 @@ export default function Home() {
                                   <EditIcon size={16} />
                                 </button>
                               )}
+
+                              <button
+                                type="button"
+                                className="btn-icon"
+                                title="Share File"
+                                aria-label={`Share ${file.name}`}
+                                onClick={() => handleOpenShareModal(file)}
+                              >
+                                <ShareIcon size={16} />
+                              </button>
 
                               <button
                                 type="button"
@@ -2491,6 +2732,18 @@ export default function Home() {
                   <EditIcon size={15} /> Edit Note
                 </button>
               )}
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ width: "auto", padding: "8px 14px", fontSize: "13px", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                onClick={() => {
+                  const targetFile = previewFile;
+                  setPreviewFile(null);
+                  handleOpenShareModal(targetFile);
+                }}
+              >
+                <ShareIcon size={15} /> Share
+              </button>
               <a
                 href={previewFile.url}
                 className="btn-primary"
@@ -2596,6 +2849,282 @@ export default function Home() {
               >
                 Save Selection
               </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Share File (Owner) */}
+      {isShareModalOpen && shareFileTarget && (
+        <div className="modal-overlay" onClick={handleCloseShareModal}>
+          <div
+            className="modal-content glass-panel share-modal-content"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="modal-header">
+              <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span className="share-icon-badge">
+                  <ShareIcon size={16} />
+                </span>
+                Share File
+              </h3>
+              <button
+                type="button"
+                className="btn-remove"
+                style={{ padding: "6px" }}
+                onClick={handleCloseShareModal}
+                title="Close"
+                aria-label="Close share dialog"
+              >
+                <CloseIcon size={16} />
+              </button>
+            </header>
+
+            <div className="modal-body" style={{ padding: "16px 0 20px 0" }}>
+              <div className="share-target-card">
+                <span className="share-file-icon">
+                  <FileIcon size={22} />
+                </span>
+                <div className="share-target-details">
+                  <div className="share-target-name" title={shareFileTarget.name}>
+                    {shareFileTarget.name}
+                  </div>
+                  <div className="share-target-meta">
+                    {formatBytes(parseInt(shareFileTarget.size))}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ marginTop: "18px" }}>
+                <label className="form-label" style={{ marginBottom: "8px" }}>
+                  Swosh Share Link
+                </label>
+                {isGeneratingShare ? (
+                  <div className="share-loading-box">
+                    <div className="spinner-sm" />
+                    <span>Generating secure Swosh link...</span>
+                  </div>
+                ) : (
+                  <div className="share-input-group">
+                    <input
+                      type="text"
+                      className="form-input share-url-input"
+                      readOnly
+                      value={shareUrl}
+                      onClick={(e) => (e.target as HTMLInputElement).select()}
+                    />
+                    <button
+                      type="button"
+                      className={`btn-primary share-copy-btn ${hasCopiedShareUrl ? "copied" : ""}`}
+                      onClick={handleCopyShareUrl}
+                    >
+                      {hasCopiedShareUrl ? (
+                        <>
+                          <CheckIcon size={14} /> Copied!
+                        </>
+                      ) : (
+                        <>
+                          <LinkIcon size={14} /> Copy Link
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="share-security-notice">
+                <span className="share-notice-icon">
+                  <LockIcon size={15} />
+                </span>
+                <div className="share-notice-text">
+                  <strong>Private to Swosh Workspace:</strong> Only logged-in Swosh users can access this link.
+                  Recipients will be able to download the file or save a copy directly into their own Swosh Drive.
+                </div>
+              </div>
+            </div>
+
+            <footer
+              className="modal-footer"
+              style={{
+                borderTop: "1px solid rgba(255, 255, 255, 0.05)",
+                paddingTop: "14px",
+                display: "flex",
+                justifyContent: "flex-end",
+              }}
+            >
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: "8px 18px", width: "auto" }}
+                onClick={handleCloseShareModal}
+              >
+                Done
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Shared File View (Recipient) */}
+      {isSharedModalOpen && (
+        <div className="modal-overlay" onClick={handleCloseSharedModal}>
+          <div
+            className="modal-content glass-panel shared-view-modal"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <header className="modal-header">
+              <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span className="share-icon-badge">
+                  <LinkIcon size={16} />
+                </span>
+                Shared with You
+              </h3>
+              <button
+                type="button"
+                className="btn-remove"
+                style={{ padding: "6px" }}
+                onClick={handleCloseSharedModal}
+                title="Close"
+                aria-label="Close shared file modal"
+              >
+                <CloseIcon size={16} />
+              </button>
+            </header>
+
+            <div className="modal-body" style={{ padding: "16px 0 20px 0" }}>
+              {isLoadingSharedFile ? (
+                <div className="empty-state" style={{ padding: "40px 0" }}>
+                  <div className="spinner" style={{ margin: "0 auto 12px auto" }}></div>
+                  <p>Loading shared file metadata...</p>
+                </div>
+              ) : sharedFileError ? (
+                <div className="share-error-box">
+                  <div style={{ color: "var(--danger)", marginBottom: "8px", display: "flex", justifyContent: "center" }}>
+                    <AlertCircleIcon size={32} />
+                  </div>
+                  <h4 style={{ color: "#fff", fontSize: "15px", marginBottom: "6px" }}>Unable to Access File</h4>
+                  <p style={{ color: "#cbd5e1", fontSize: "13px", lineHeight: 1.5 }}>
+                    {sharedFileError}
+                  </p>
+                </div>
+              ) : sharedFileInfo ? (
+                <>
+                  <div className="shared-file-banner-card">
+                    <div className="shared-file-banner-info">
+                      <span className="share-file-icon">
+                        <FileIcon size={26} />
+                      </span>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div className="shared-file-title" title={sharedFileInfo.name}>
+                          {sharedFileInfo.name}
+                        </div>
+                        <div className="shared-file-banner-meta">
+                          <span>{formatBytes(sharedFileInfo.size)}</span>
+                          <span>&bull;</span>
+                          <span className="shared-sender-badge">
+                            Shared by @{sharedFileInfo.owner_username}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Inline preview if image or text */}
+                  {(() => {
+                    const ext = sharedFileInfo.name.split(".").pop()?.toLowerCase() || "";
+                    const isImg = ["png", "jpg", "jpeg", "gif", "svg", "webp"].includes(ext);
+
+                    if (isImg && sharedParamToken) {
+                      return (
+                        <div className="shared-preview-container">
+                          <img
+                            src={`/api/drive/share/preview?token=${encodeURIComponent(sharedParamToken)}`}
+                            alt={sharedFileInfo.name}
+                            className="shared-preview-image"
+                          />
+                        </div>
+                      );
+                    }
+
+                    if (sharedPreviewContent) {
+                      return (
+                        <div className="shared-preview-container">
+                          <div className="shared-preview-text">
+                            {sharedPreviewContent}
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return null;
+                  })()}
+
+                  <div className="share-security-notice" style={{ marginTop: "16px" }}>
+                    <span className="share-notice-icon">
+                      <LockIcon size={15} />
+                    </span>
+                    <div className="share-notice-text">
+                      Choose to either download this file directly to your device, or save a personal copy directly into your Swosh Drive without using local bandwidth.
+                    </div>
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            <footer
+              className="modal-footer"
+              style={{
+                borderTop: "1px solid rgba(255, 255, 255, 0.05)",
+                paddingTop: "14px",
+                display: "flex",
+                justifyContent: "space-between",
+                gap: "10px",
+                flexWrap: "wrap",
+              }}
+            >
+              <button
+                type="button"
+                className="btn-secondary"
+                style={{ padding: "8px 16px", width: "auto" }}
+                onClick={handleCloseSharedModal}
+              >
+                Close
+              </button>
+
+              {sharedFileInfo && !sharedFileError && (
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ padding: "8px 16px", width: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                    onClick={handleDownloadSharedFile}
+                    disabled={isDownloadingSharedFile}
+                  >
+                    <DownloadIcon size={15} />
+                    <span>Download</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    style={{ padding: "8px 18px", width: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }}
+                    onClick={handleSaveSharedToDrive}
+                    disabled={isSavingSharedFile}
+                  >
+                    {isSavingSharedFile ? (
+                      <>
+                        <div className="spinner-sm" />
+                        <span>Saving to Drive...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CloudIcon size={15} />
+                        <span>Save to Swosh Drive</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
             </footer>
           </div>
         </div>

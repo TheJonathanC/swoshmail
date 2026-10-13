@@ -473,8 +473,68 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
 
   const isOnline = (uid: string) => onlineUsers.has(uid);
 
-  const formatTime = (iso: string) =>
+  const isSameDay = (d1: string, d2: string) => {
+    const date1 = new Date(d1);
+    const date2 = new Date(d2);
+    return (
+      date1.getFullYear() === date2.getFullYear() &&
+      date1.getMonth() === date2.getMonth() &&
+      date1.getDate() === date2.getDate()
+    );
+  };
+
+  const formatDateDivider = (iso: string) => {
+    const date = new Date(iso);
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+
+    if (isSameDay(iso, today.toISOString())) {
+      return "Today";
+    }
+    if (isSameDay(iso, yesterday.toISOString())) {
+      return "Yesterday";
+    }
+    return date.toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: date.getFullYear() !== today.getFullYear() ? "numeric" : undefined,
+    });
+  };
+
+  const formatMessageTime = (iso: string) =>
     new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  const formatMessageDateBadge = (iso: string) => {
+    const today = new Date();
+    if (isSameDay(iso, today.toISOString())) {
+      return "";
+    }
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+    if (isSameDay(iso, yesterday.toISOString())) {
+      return "Yesterday";
+    }
+    const date = new Date(iso);
+    return date.toLocaleDateString([], {
+      month: "short",
+      day: "numeric",
+    });
+  };
+
+  const formatFullDateTime = (iso: string) => {
+    const date = new Date(iso);
+    return date.toLocaleString(undefined, {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
 
   return (
     <div className={`chat-layout ${activeConv ? "chat-active" : "chat-list-view"}`}>
@@ -597,97 +657,118 @@ export default function ChatPanel({ userId, username }: ChatPanelProps) {
                   )}
                 </div>
               )}
-              {messages.map((msg) => {
+              {messages.map((msg, index) => {
                 const isMine = msg.sender_id === userId;
                 const isPing = msg.content.toLowerCase() === "ping";
                 const isPong = msg.content.toLowerCase() === "pong";
                 const isActionActive = activeActionMessageId === msg.id;
+                const showDateDivider =
+                  index === 0 || !isSameDay(msg.created_at, messages[index - 1].created_at);
+                const dateBadge = formatMessageDateBadge(msg.created_at);
 
                 return (
-                  <div key={msg.id} className={`chat-message-row ${isMine ? "mine" : "other"}`}>
-                    <div
-                      id={`chat-msg-${msg.id}`}
-                      className={`chat-bubble ${isMine ? "mine" : "other"} chat-bubble-interactive`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActiveActionMessageId((prev) => (prev === msg.id ? null : msg.id));
-                      }}
-                      title="Tap for options"
-                    >
-                      {msg.reply_to && (
-                        <div
-                          className="chat-reply-quote"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleScrollToMessage(msg.reply_to!.id);
-                          }}
-                          title={`Jump to message from ${msg.reply_to.sender_name}`}
-                        >
-                          <div className="chat-reply-quote-sender">
-                            <ReplyIcon size={11} /> {msg.reply_to.sender_name}
-                          </div>
-                          <div className="chat-reply-quote-text">
-                            {msg.reply_to.content}
-                          </div>
-                        </div>
-                      )}
-                      {isPing ? (
-                        <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ color: "var(--primary)", fontSize: "10px" }}>●</span> ping</span>
-                      ) : isPong ? (
-                        <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ color: "var(--success)", fontSize: "10px" }}>●</span> pong</span>
-                      ) : (
-                        msg.content
-                      )}
-                      <div style={{ fontSize: "10px", opacity: 0.7, marginTop: "4px", textAlign: "right" }}>
-                        {formatTime(msg.created_at)}
+                  <React.Fragment key={msg.id}>
+                    {showDateDivider && (
+                      <div className="chat-date-separator">
+                        <span className="chat-date-pill">
+                          {formatDateDivider(msg.created_at)}
+                        </span>
                       </div>
-                    </div>
-                    <div className={`message-actions ${isActionActive ? "show-actions" : ""}`}>
-                      <button
-                        type="button"
-                        className="action-icon-btn"
+                    )}
+                    <div className={`chat-message-row ${isMine ? "mine" : "other"}`}>
+                      <div
+                        id={`chat-msg-${msg.id}`}
+                        className={`chat-bubble ${isMine ? "mine" : "other"} chat-bubble-interactive`}
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleReplyClick(msg);
+                          setActiveActionMessageId((prev) => (prev === msg.id ? null : msg.id));
                         }}
-                        title="Reply to message"
-                        aria-label="Reply to message"
+                        title="Tap for options"
                       >
-                        <ReplyIcon size={14} />
-                      </button>
-                      {isMine && (
-                        <>
-                          <button
-                            type="button"
-                            className="action-icon-btn"
+                        {msg.reply_to && (
+                          <div
+                            className="chat-reply-quote"
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleEditClick(msg);
+                              handleScrollToMessage(msg.reply_to!.id);
                             }}
-                            title="Edit Message"
-                            aria-label="Edit Message"
+                            title={`Jump to message from ${msg.reply_to.sender_name}`}
                           >
-                            <EditIcon size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            className="action-icon-btn danger"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setMessageToDelete(msg.id);
-                              setActiveActionMessageId(null);
-                            }}
-                            title="Delete Message"
-                            aria-label="Delete Message"
-                          >
-                            <TrashIcon size={14} />
-                          </button>
-                        </>
-                      )}
+                            <div className="chat-reply-quote-sender">
+                              <ReplyIcon size={11} /> {msg.reply_to.sender_name}
+                            </div>
+                            <div className="chat-reply-quote-text">
+                              {msg.reply_to.content}
+                            </div>
+                          </div>
+                        )}
+                        {isPing ? (
+                          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ color: "var(--primary)", fontSize: "10px" }}>●</span> ping</span>
+                        ) : isPong ? (
+                          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ color: "var(--success)", fontSize: "10px" }}>●</span> pong</span>
+                        ) : (
+                          msg.content
+                        )}
+                        <div
+                          className="chat-bubble-timestamp"
+                          title={formatFullDateTime(msg.created_at)}
+                        >
+                          {dateBadge && (
+                            <span className="chat-timestamp-date">
+                              {dateBadge} &bull;{" "}
+                            </span>
+                          )}
+                          <span>{formatMessageTime(msg.created_at)}</span>
+                        </div>
+                      </div>
+                      <div className={`message-actions ${isActionActive ? "show-actions" : ""}`}>
+                        <button
+                          type="button"
+                          className="action-icon-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleReplyClick(msg);
+                          }}
+                          title="Reply to message"
+                          aria-label="Reply to message"
+                        >
+                          <ReplyIcon size={14} />
+                        </button>
+                        {isMine && (
+                          <>
+                            <button
+                              type="button"
+                              className="action-icon-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEditClick(msg);
+                              }}
+                              title="Edit Message"
+                              aria-label="Edit Message"
+                            >
+                              <EditIcon size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              className="action-icon-btn danger"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMessageToDelete(msg.id);
+                                setActiveActionMessageId(null);
+                              }}
+                              title="Delete Message"
+                              aria-label="Delete Message"
+                            >
+                              <TrashIcon size={14} />
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
-                  </div>
+                  </React.Fragment>
                 );
               })}
+
               <div ref={messagesEndRef} />
             </div>
 
