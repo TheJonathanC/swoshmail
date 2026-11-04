@@ -1,132 +1,124 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
-import { generateShareToken, verifyShareToken } from "@/lib/crypto";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { requireUser } from "@/lib/session";
+import { enforceRateLimit, MINUTE } from "@/lib/rate-limit";
+import { badRequest, check, notFound, readJson, requireUuid, route } from "@/lib/http";
+import { getOwnedFile } from "@/lib/drive";
+import { appOrigin, isShareActive, resolveShare, toShareItem, type ShareRow } from "@/lib/shares";
+import { previewKindFor } from "@/lib/files";
+import { SHARE_MAX_EXPIRY_DAYS } from "@/lib/constants";
+import type { CreateShareResponse, ListSharesResponse, SharedFileInfo } from "@/types/api";
 
-// POST: Create a shareable link for a file (owner only)
-export async function POST(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session || !session.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const userId = (session.user as { id?: string }).id;
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+const SHARE_COLUMNS = "id, file_id, owner_id, recipient_id, created_at, expires_at, revoked_at";
 
-    const rl = checkRateLimit(`drive_share_create_${userId}`, 30, 60000);
-    if (!rl.success) {
-      return NextResponse.json({ error: "Too many share requests. Please wait." }, { status: 429 });
-    }
+// POST /api/drive/share { fileId, recipient?, expiresInDays? } -> { share }
+export const POST = route("POST /api/drive/share", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`drive_share_create_${user.id}`, 30, MINUTE, "Too many share links. Please wait a moment.");
+  const body = await readJson<{ fileId: string; recipient: string | null; expiresInDays: number | null }>(request);
+  const fileId = requireUuid(body.fileId, "fileId");
+  await getOwnedFile(user.id, fileId);
 
-    const body = await request.json();
-    const { fileId } = body;
-
-    if (!fileId || typeof fileId !== "string") {
-      return NextResponse.json({ error: "Missing file ID" }, { status: 400 });
-    }
-
-    // Verify user owns the file
-    const { data: file, error } = await supabase
-      .from("files")
-      .select("id, name, size, key")
-      .eq("id", fileId)
-      .eq("owner_id", userId)
-      .single();
-
-    if (error || !file) {
-      return NextResponse.json({ error: "File not found or access denied" }, { status: 404 });
-    }
-
-    const token = generateShareToken(file.id, userId);
-
-    return NextResponse.json({
-      success: true,
-      token,
-      file: {
-        id: file.id,
-        name: file.name,
-        size: file.size,
-      },
-    });
-  } catch (error: unknown) {
-    console.error("POST drive share error:", error);
-    const message = error instanceof Error ? error.message : "Failed to generate share link";
-    return NextResponse.json({ error: message }, { status: 500 });
+  let recipientId: string | null = null;
+  let recipientUsername: string | null = null;
+  const recipient = typeof body.recipient === "string" ? body.recipient.trim().replace(/^@/, "") : "";
+  if (recipient) {
+    if (recipient.length > 255) throw badRequest("Invalid username.");
+    const target = check(
+      await supabase.from("users").select("id, username").eq("username", recipient).maybeSingle(),
+      "share recipient lookup"
+    ) as { id: string; username: string } | null;
+    if (!target) throw notFound("No Swosh user with that username.", "user_not_found");
+    if (target.id === user.id) throw badRequest("You already own this file.", "self_share");
+    recipientId = target.id;
+    recipientUsername = target.username;
   }
-}
 
-// GET: Inspect and resolve a shared file by token (only for authenticated Swosh users)
-export async function GET(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session || !session.user) {
-      return NextResponse.json(
-        { error: "Authentication required. You must be signed in to Swosh Workspace to access shared files.", requiresAuth: true },
-        { status: 401 }
-      );
+  let expiresAt: string | null = null;
+  if (body.expiresInDays !== undefined && body.expiresInDays !== null) {
+    const days = Number(body.expiresInDays);
+    if (!Number.isFinite(days) || days <= 0 || days > SHARE_MAX_EXPIRY_DAYS) {
+      throw badRequest(`Expiry must be between 1 and ${SHARE_MAX_EXPIRY_DAYS} days.`);
     }
-    const userId = (session.user as { id?: string }).id;
-
-    const { searchParams } = new URL(request.url);
-    const token = searchParams.get("token");
-
-    if (!token) {
-      return NextResponse.json({ error: "Missing share token" }, { status: 400 });
-    }
-
-    const verified = verifyShareToken(token);
-    if (!verified) {
-      return NextResponse.json(
-        { error: "Invalid or tampered share link. Please ask the sender for a new link." },
-        { status: 400 }
-      );
-    }
-
-    // Rate Limit token inspection
-    const rl = checkRateLimit(`drive_share_view_${userId}`, 60, 60000);
-    if (!rl.success) {
-      return NextResponse.json({ error: "Rate limit exceeded. Please wait a moment." }, { status: 429 });
-    }
-
-    // Fetch file and owner's username
-    const { data: file, error } = await supabase
-      .from("files")
-      .select(`
-        id, name, size, key, url, uploaded_at, owner_id,
-        owner:users!files_owner_id_fkey(username)
-      `)
-      .eq("id", verified.fileId)
-      .eq("owner_id", verified.ownerId)
-      .single();
-
-    if (error || !file) {
-      return NextResponse.json(
-        { error: "This file is no longer available or was deleted by the owner." },
-        { status: 404 }
-      );
-    }
-
-    const ownerData = file.owner as { username?: string } | null;
-    const sharedBy = ownerData?.username ? `@${ownerData.username}` : "A Swosh user";
-
-    return NextResponse.json({
-      success: true,
-      file: {
-        id: file.id,
-        name: file.name,
-        size: file.size,
-        uploaded_at: file.uploaded_at,
-      },
-      sharedBy,
-      isOwner: userId === file.owner_id,
-    });
-  } catch (error: unknown) {
-    console.error("GET drive share error:", error);
-    const message = error instanceof Error ? error.message : "Failed to load shared file";
-    return NextResponse.json({ error: message }, { status: 500 });
+    expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
   }
-}
+
+  const row = check(
+    await supabase
+      .from("file_shares")
+      .insert({ file_id: fileId, owner_id: user.id, recipient_id: recipientId, expires_at: expiresAt })
+      .select(SHARE_COLUMNS)
+      .single(),
+    "create share"
+  ) as ShareRow;
+
+  const res: CreateShareResponse = { share: toShareItem(row, recipientUsername, appOrigin(request)) };
+  return NextResponse.json(res);
+});
+
+// GET /api/drive/share?fileId=  -> { shares } (owner)
+// GET /api/drive/share?token=   -> SharedFileInfo (recipient)
+export const GET = route("GET /api/drive/share", async (request: Request) => {
+  const user = await requireUser();
+  const params = new URL(request.url).searchParams;
+  const token = params.get("token");
+
+  if (token !== null) {
+    await enforceRateLimit(`drive_share_view_${user.id}`, 60, MINUTE);
+    const { share, file, ownerUsername } = await resolveShare(token, user.id);
+    const res: SharedFileInfo = {
+      id: file.id,
+      name: file.name,
+      size: file.size,
+      uploaded_at: file.uploaded_at,
+      owner_username: ownerUsername,
+      previewKind: previewKindFor(file.name),
+      expires_at: share.expires_at,
+    };
+    return NextResponse.json(res, { headers: { "Cache-Control": "private, no-store" } });
+  }
+
+  await enforceRateLimit(`drive_share_list_${user.id}`, 60, MINUTE);
+  const fileId = requireUuid(params.get("fileId"), "fileId");
+  await getOwnedFile(user.id, fileId);
+  const rows = check(
+    await supabase
+      .from("file_shares")
+      .select(`${SHARE_COLUMNS}, recipient:users!file_shares_recipient_id_fkey(username)`)
+      .eq("owner_id", user.id)
+      .eq("file_id", fileId)
+      .is("revoked_at", null)
+      .order("created_at", { ascending: false }),
+    "list shares"
+  ) as (ShareRow & { recipient: { username: string } | { username: string }[] | null })[];
+  const origin = appOrigin(request);
+  const res: ListSharesResponse = {
+    shares: (rows ?? [])
+      .filter((r) => isShareActive(r))
+      .map((r) => {
+        const rec = Array.isArray(r.recipient) ? r.recipient[0] : r.recipient;
+        return toShareItem(r, rec?.username ?? null, origin);
+      }),
+  };
+  return NextResponse.json(res, { headers: { "Cache-Control": "private, no-store" } });
+});
+
+// DELETE /api/drive/share { shareId } -> { success: true }
+export const DELETE = route("DELETE /api/drive/share", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`drive_share_revoke_${user.id}`, 60, MINUTE);
+  const body = await readJson<{ shareId: string }>(request);
+  const shareId = requireUuid(body.shareId, "shareId");
+  const rows = check(
+    await supabase
+      .from("file_shares")
+      .update({ revoked_at: new Date().toISOString() })
+      .eq("id", shareId)
+      .eq("owner_id", user.id)
+      .is("revoked_at", null)
+      .select("id"),
+    "revoke share"
+  ) as { id: string }[];
+  if (!rows || rows.length === 0) throw notFound("Share link not found.");
+  return NextResponse.json({ success: true as const });
+});

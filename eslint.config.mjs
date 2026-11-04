@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "coverage/**",
+    // Vendored dev-only bundle (see tools/minimatch-compat/README.md)
+    "tools/**",
   ]),
 ]);
 

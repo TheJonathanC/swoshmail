@@ -1,54 +1,31 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
+import { requireUser } from "@/lib/session";
+import { enforceRateLimit, MINUTE } from "@/lib/rate-limit";
+import { isForeignKeyViolation, notFound, parseFolderId, readJson, route, serverError } from "@/lib/http";
+import { assertFolderOwned, FOLDER_COLUMNS, toFolderItem } from "@/lib/drive";
+import { validateFolderName } from "@/lib/folders";
+import type { CreateFolderResponse, FolderItem } from "@/types/api";
 
-// POST: Create a new folder
-export async function POST(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session || !session.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const userId = (session.user as any).id;
+// POST /api/drive/folders { name, parentId } -> { folder }
+export const POST = route("POST /api/drive/folders", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`drive_folder_${user.id}`, 60, MINUTE, "Too many folder operations. Please wait a moment.");
 
-    const { name, parentId } = await request.json();
+  const body = await readJson<{ name: string; parentId: string | null }>(request);
+  const name = validateFolderName(body.name);
+  const parentId = parseFolderId(body.parentId, "parentId");
+  await assertFolderOwned(user.id, parentId);
 
-    if (!name?.trim()) {
-      return NextResponse.json({ error: "Folder name is required" }, { status: 400 });
-    }
-
-    // Verify parent folder exists and is owned by the user (if parentId is provided)
-    if (parentId && parentId !== "root") {
-      const { data: parentFolder, error: parentError } = await supabase
-        .from("folders")
-        .select("id")
-        .eq("id", parentId)
-        .eq("owner_id", userId)
-        .single();
-
-      if (parentError || !parentFolder) {
-        return NextResponse.json({ error: "Parent folder not found or access denied" }, { status: 400 });
-      }
-    }
-
-    const { data: newFolder, error: insertError } = await supabase
-      .from("folders")
-      .insert({
-        name: name.trim(),
-        parent_id: parentId === "root" || !parentId ? null : parentId,
-        owner_id: userId,
-      })
-      .select()
-      .single();
-
-    if (insertError) {
-      return NextResponse.json({ error: insertError.message }, { status: 500 });
-    }
-
-    return NextResponse.json({ success: true, folder: newFolder });
-  } catch (error: any) {
-    console.error("Create folder error:", error);
-    return NextResponse.json({ error: error.message || "Failed to create folder" }, { status: 500 });
+  const { data, error } = await supabase
+    .from("folders")
+    .insert({ name, parent_id: parentId, owner_id: user.id })
+    .select(FOLDER_COLUMNS)
+    .single();
+  if (error || !data) {
+    if (isForeignKeyViolation(error)) throw notFound("Parent folder not found.", "folder_not_found");
+    return serverError("create folder", error, "Could not create the folder.");
   }
-}
+  const res: CreateFolderResponse = { folder: toFolderItem(data as FolderItem) };
+  return NextResponse.json(res);
+});

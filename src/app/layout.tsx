@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
+import type { ReactNode } from "react";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { Providers } from "./providers";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -15,23 +17,17 @@ const geistMono = Geist_Mono({
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
   viewportFit: "cover",
   themeColor: "#060814",
+  colorScheme: "dark",
 };
 
 export const metadata: Metadata = {
-  title: "Swoshmail - Secure Backup",
-  description: "Upload and email files to your inbox securely using Swoshmail",
+  title: "Swosh Workspace",
+  description: "Swosh Workspace: send email, store and share files in Drive, and chat with your team in one secure place.",
 };
 
-import { Providers } from "./providers";
-
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
       <body>

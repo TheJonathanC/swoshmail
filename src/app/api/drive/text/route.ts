@@ -1,195 +1,101 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
-import { supabase } from "@/lib/supabase";
-import { uploadToR2, deleteFromR2 } from "@/lib/r2";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { requireUser } from "@/lib/session";
+import { enforceRateLimit, MINUTE } from "@/lib/rate-limit";
+import { badRequest, conflict, parseFolderId, readJson, requireUuid, route, tooLarge } from "@/lib/http";
+import {
+  assertFolderOwned,
+  getOwnedFile,
+  getTotalUsed,
+  newObjectKey,
+  replaceFileObject,
+  siblingFileNames,
+  storeFile,
+  toFileItem,
+} from "@/lib/drive";
+import { getObjectText, putObject } from "@/lib/r2";
+import { getExtension, sanitizeFileName } from "@/lib/files";
+import { EDITABLE_TEXT_EXTENSIONS, MAX_TEXT_FILE_BYTES } from "@/lib/constants";
+import type { TextSaveResponse } from "@/types/api";
 
-const ONE_GB = 1024 * 1024 * 1024; // 1 GB in bytes
+const TEXT_TYPE = "text/plain; charset=utf-8";
 
-export async function POST(request: Request) {
-  return handleSaveTextFile(request);
-}
-
-export async function PUT(request: Request) {
-  return handleSaveTextFile(request);
-}
-
-async function handleSaveTextFile(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session || !session.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const userId = (session.user as { id?: string }).id;
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    // Rate Limit: 60 note operations per minute per user
-    const rl = checkRateLimit(`drive_text_${userId}`, 60, 60000);
-    if (!rl.success) {
-      return NextResponse.json(
-        { error: "Rate limit exceeded. Please wait a moment before saving again." },
-        { status: 429 }
-      );
-    }
-
-    const body = await request.json();
-    const { fileId, name, content, folderId } = body;
-    const safeContent = typeof content === "string" ? content : "";
-    const buffer = Buffer.from(safeContent, "utf-8");
-    const newSize = buffer.length;
-
-    // 1. Fetch current total storage usage across all user files
-    const { data: allFiles, error: totalError } = await supabase
-      .from("files")
-      .select("size")
-      .eq("owner_id", userId);
-
-    if (totalError) {
-      return NextResponse.json({ error: "Failed to verify storage quota" }, { status: 500 });
-    }
-
-    const totalUsed = allFiles.reduce((acc, f) => acc + parseInt(f.size || "0", 10), 0);
-
-    // 2. Handle EDIT / UPDATE existing file
-    if (fileId) {
-      const { data: existingFile, error: fetchErr } = await supabase
-        .from("files")
-        .select("*")
-        .eq("id", fileId)
-        .eq("owner_id", userId)
-        .single();
-
-      if (fetchErr || !existingFile) {
-        return NextResponse.json({ error: "File not found or access denied" }, { status: 404 });
-      }
-
-      // Check quota restriction adjusting for previous file size
-      const oldSize = parseInt(existingFile.size || "0", 10);
-      if (totalUsed - oldSize + newSize > ONE_GB) {
-        return NextResponse.json(
-          {
-            error: `Storage quota exceeded. Your current limit is 1 GB. Used: ${(totalUsed / 1024 / 1024).toFixed(1)}MB.`,
-          },
-          { status: 400 }
-        );
-      }
-
-      // Sanitize new file name if provided, else retain existing
-      let targetName = typeof name === "string" && name.trim() ? name.trim() : existingFile.name;
-      targetName = targetName.replace(/[/\\?%*:|"<>]/g, "").trim();
-      if (!targetName) targetName = existingFile.name;
-      // If the file was .txt or name lacks extension, ensure .txt
-      if (!targetName.includes(".")) {
-        targetName += ".txt";
-      }
-
-      // Delete old R2 object
-      try {
-        await deleteFromR2(existingFile.key);
-      } catch (r2Err) {
-        console.error("Failed to delete old R2 object during note update:", r2Err);
-      }
-
-      // Upload updated content to R2
-      const fileKey = `drives/${userId}/${Date.now()}-${targetName}`;
-      await uploadToR2(fileKey, buffer, "text/plain; charset=utf-8");
-
-      // Update Supabase record
-      const downloadUrl = `/api/drive/download?key=${encodeURIComponent(fileKey)}`;
-      const { data: updatedFile, error: updateError } = await supabase
-        .from("files")
-        .update({
-          name: targetName,
-          size: newSize,
-          key: fileKey,
-          url: downloadUrl,
-          uploaded_at: new Date().toISOString(),
-        })
-        .eq("id", fileId)
-        .eq("owner_id", userId)
-        .select()
-        .single();
-
-      if (updateError) {
-        return NextResponse.json({ error: "Failed to update file metadata" }, { status: 500 });
-      }
-
-      return NextResponse.json({ success: true, file: updatedFile, action: "updated" });
-    }
-
-    // 3. Handle CREATE new text file
-    if (totalUsed + newSize > ONE_GB) {
-      return NextResponse.json(
-        {
-          error: `Storage quota exceeded. Your current limit is 1 GB. Used: ${(totalUsed / 1024 / 1024).toFixed(1)}MB.`,
-        },
-        { status: 400 }
-      );
-    }
-
-    const activeFolderId = !folderId || folderId === "root" ? null : folderId;
-
-    // Sanitize and ensure .txt extension
-    let rawName = (typeof name === "string" ? name.trim() : "") || "untitled.txt";
-    rawName = rawName.replace(/[/\\?%*:|"<>]/g, "").trim();
-    if (!rawName) rawName = "untitled.txt";
-    if (!rawName.toLowerCase().endsWith(".txt")) {
-      rawName += ".txt";
-    }
-
-    // Check sibling files in target folder to avoid accidental naming collisions
-    const existingQuery = supabase
-      .from("files")
-      .select("name")
-      .eq("owner_id", userId);
-
-    if (activeFolderId) {
-      existingQuery.eq("folder_id", activeFolderId);
-    } else {
-      existingQuery.is("folder_id", null);
-    }
-
-    const { data: siblings } = await existingQuery;
-    let finalName = rawName;
-    if (siblings && siblings.length > 0) {
-      const baseName = rawName.replace(/\.txt$/i, "");
-      let counter = 1;
-      while (siblings.some((f) => f.name.toLowerCase() === finalName.toLowerCase())) {
-        finalName = `${baseName} (${counter}).txt`;
-        counter++;
-      }
-    }
-
-    // Upload to R2
-    const fileKey = `drives/${userId}/${Date.now()}-${finalName}`;
-    await uploadToR2(fileKey, buffer, "text/plain; charset=utf-8");
-
-    // Insert metadata record in Supabase
-    const downloadUrl = `/api/drive/download?key=${encodeURIComponent(fileKey)}`;
-    const { data: newFile, error: insertError } = await supabase
-      .from("files")
-      .insert({
-        name: finalName,
-        size: newSize,
-        key: fileKey,
-        url: downloadUrl,
-        owner_id: userId,
-        folder_id: activeFolderId,
-      })
-      .select()
-      .single();
-
-    if (insertError) {
-      return NextResponse.json({ error: "Failed to record file metadata" }, { status: 500 });
-    }
-
-    return NextResponse.json({ success: true, file: newFile, action: "created" });
-  } catch (error: unknown) {
-    console.error("Text file save error:", error);
-    const message = error instanceof Error ? error.message : "Failed to save text file";
-    return NextResponse.json({ error: message }, { status: 500 });
+function normalizeTextName(input: unknown, fallback: string): string {
+  let name = sanitizeFileName(typeof input === "string" && input.trim() ? input : fallback, fallback);
+  if (!getExtension(name)) name = sanitizeFileName(`${name}.txt`, "untitled.txt");
+  if (!EDITABLE_TEXT_EXTENSIONS.has(getExtension(name))) {
+    throw badRequest("Only text files (.txt, .md, .json, .csv, ...) can be edited.", "not_editable");
   }
+  return name;
 }
+
+function encodeContent(content: unknown): Buffer {
+  if (content !== undefined && typeof content !== "string") throw badRequest("content must be a string.");
+  const buf = Buffer.from(content ?? "", "utf-8");
+  if (buf.byteLength > MAX_TEXT_FILE_BYTES) throw tooLarge("Notes can be at most 1 MB.", "too_large");
+  return buf;
+}
+
+function hasName(names: string[], name: string): boolean {
+  const lower = name.toLowerCase();
+  return names.some((n) => n.toLowerCase() === lower);
+}
+
+// GET /api/drive/text?fileId= -> { content, name }
+export const GET = route("GET /api/drive/text", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`drive_text_read_${user.id}`, 120, MINUTE);
+  const fileId = requireUuid(new URL(request.url).searchParams.get("fileId"), "fileId");
+  const file = await getOwnedFile(user.id, fileId);
+  if (!EDITABLE_TEXT_EXTENSIONS.has(getExtension(file.name))) {
+    throw badRequest("This file type cannot be edited.", "not_editable");
+  }
+  if ((Number(file.size) || 0) > MAX_TEXT_FILE_BYTES) throw tooLarge("This file is too large to edit (max 1 MB).", "too_large");
+  const content = await getObjectText(file.key);
+  return NextResponse.json({ content, name: file.name }, { headers: { "Cache-Control": "private, no-store" } });
+});
+
+// POST /api/drive/text { name, content, folderId } -> { file, totalUsed }
+export const POST = route("POST /api/drive/text", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`drive_text_${user.id}`, 60, MINUTE, "Too many saves. Please wait a moment.");
+  const body = await readJson<{ name: string; content: string; folderId: string | null }>(request, 2 * MAX_TEXT_FILE_BYTES);
+
+  const bytes = encodeContent(body.content);
+  const name = normalizeTextName(body.name, "untitled.txt");
+  const folderId = parseFolderId(body.folderId);
+  await assertFolderOwned(user.id, folderId);
+  if (hasName(await siblingFileNames(user.id, folderId), name)) {
+    throw conflict("A file with this name already exists in this folder.", "name_conflict");
+  }
+
+  const row = await storeFile({ userId: user.id, name, folderId, body: bytes, contentType: TEXT_TYPE });
+  const res: TextSaveResponse = { file: toFileItem(row), totalUsed: await getTotalUsed(user.id) };
+  return NextResponse.json(res);
+});
+
+// PUT /api/drive/text { fileId, name, content } -> { file, totalUsed }
+export const PUT = route("PUT /api/drive/text", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`drive_text_${user.id}`, 60, MINUTE, "Too many saves. Please wait a moment.");
+  const body = await readJson<{ fileId: string; name: string; content: string }>(request, 2 * MAX_TEXT_FILE_BYTES);
+
+  const fileId = requireUuid(body.fileId, "fileId");
+  const bytes = encodeContent(body.content);
+  const existing = await getOwnedFile(user.id, fileId);
+  if (!EDITABLE_TEXT_EXTENSIONS.has(getExtension(existing.name))) {
+    throw badRequest("This file type cannot be edited.", "not_editable");
+  }
+  const name = normalizeTextName(body.name, existing.name);
+  if (name.toLowerCase() !== existing.name.toLowerCase()) {
+    if (hasName(await siblingFileNames(user.id, existing.folder_id, existing.id), name)) {
+      throw conflict("A file with this name already exists in this folder.", "name_conflict");
+    }
+  }
+
+  // New object first -> row update (quota enforced by trigger) -> old object deleted last.
+  const key = newObjectKey(user.id);
+  await putObject(key, bytes, TEXT_TYPE);
+  const row = await replaceFileObject(user.id, existing, { key, size: bytes.byteLength, name, contentType: TEXT_TYPE });
+  const res: TextSaveResponse = { file: toFileItem(row), totalUsed: await getTotalUsed(user.id) };
+  return NextResponse.json(res);
+});
