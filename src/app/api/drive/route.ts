@@ -1,254 +1,106 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
-import { uploadToR2, deleteFromR2 } from "@/lib/r2";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { requireUser } from "@/lib/session";
+import { enforceRateLimit, MINUTE } from "@/lib/rate-limit";
+import { badRequest, check, notFound, parseFolderId, readForm, route, tooLarge } from "@/lib/http";
+import {
+  assertFolderOwned,
+  FILE_COLUMNS,
+  FOLDER_COLUMNS,
+  getOwnedFile,
+  getTotalUsed,
+  newObjectKey,
+  replaceFileObject,
+  resolveUniqueName,
+  storeFile,
+  toFileItem,
+  toFolderItem,
+  type FileRow,
+} from "@/lib/drive";
+import { putObject } from "@/lib/r2";
+import { sanitizeFileName } from "@/lib/files";
+import { DRIVE_QUOTA_BYTES, MAX_MULTIPART_UPLOAD_BYTES } from "@/lib/constants";
+import type { Breadcrumb, DriveListResponse, FolderItem, UploadCompleteResponse } from "@/types/api";
 
-const ONE_GB = 1024 * 1024 * 1024; // 1 GB in bytes
+// GET /api/drive?folderId=<uuid|root>
+export const GET = route("GET /api/drive", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`drive_list_${user.id}`, 120, MINUTE);
 
-// Helper to isolate query and prevent TS cyclic inference in the while loop
-async function fetchFolder(id: string, userId: string) {
-  const res = await supabase
-    .from("folders")
-    .select("id, name, parent_id")
-    .eq("id", id)
-    .eq("owner_id", userId)
-    .single();
-  return res;
-}
+  const folderId = parseFolderId(new URL(request.url).searchParams.get("folderId"));
 
-// Helper to recursively fetch parent folders for breadcrumbs
-async function getBreadcrumbs(folderId: string | null, userId: string): Promise<any[]> {
-  if (!folderId || folderId === "root") return [];
-  const crumbs: any[] = [];
-  let currentId: string | null = folderId;
+  let foldersQ = supabase.from("folders").select(FOLDER_COLUMNS).eq("owner_id", user.id);
+  foldersQ = folderId ? foldersQ.eq("parent_id", folderId) : foldersQ.is("parent_id", null);
+  let filesQ = supabase.from("files").select(FILE_COLUMNS).eq("owner_id", user.id);
+  filesQ = folderId ? filesQ.eq("folder_id", folderId) : filesQ.is("folder_id", null);
 
-  while (currentId) {
-    const { data: folder } = await fetchFolder(currentId, userId);
+  const [foldersRes, filesRes, totalUsed, crumbsRes] = await Promise.all([
+    foldersQ.order("name", { ascending: true }),
+    filesQ.order("uploaded_at", { ascending: false }),
+    getTotalUsed(user.id),
+    folderId
+      ? supabase.rpc("folder_breadcrumbs", { p_folder_id: folderId, p_owner_id: user.id })
+      : Promise.resolve({ data: [] as Breadcrumb[], error: null }),
+  ]);
 
-    if (folder) {
-      crumbs.unshift({ id: folder.id, name: folder.name });
-      currentId = folder.parent_id;
-    } else {
-      break;
-    }
+  const folders = (check(foldersRes, "list folders") ?? []) as FolderItem[];
+  const files = (check(filesRes, "list files") ?? []) as FileRow[];
+  const breadcrumbs = (check(crumbsRes, "breadcrumbs") ?? []) as Breadcrumb[];
+  if (folderId && breadcrumbs.length === 0) throw notFound("Folder not found.", "folder_not_found");
+
+  const body: DriveListResponse = {
+    folders: folders.map(toFolderItem),
+    files: files.map(toFileItem),
+    breadcrumbs: breadcrumbs.map((b) => ({ id: b.id, name: b.name })),
+    totalUsed,
+    quota: DRIVE_QUOTA_BYTES,
+  };
+  return NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });
+});
+
+// POST /api/drive (multipart fallback for files <= 4 MB): fields file, folderId?, replaceFileId?
+export const POST = route("POST /api/drive", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`drive_upload_${user.id}`, 60, MINUTE, "Too many uploads. Please wait a moment.");
+
+  const declared = Number(request.headers.get("content-length") || "0");
+  if (declared > MAX_MULTIPART_UPLOAD_BYTES + 64 * 1024) {
+    throw tooLarge("This file is too large for a direct upload.", "too_large");
   }
 
-  return crumbs;
-}
+  const form = await readForm(request);
+  const file = form.get("file");
+  if (!(file instanceof File)) throw badRequest("No file provided.");
+  if (file.size > MAX_MULTIPART_UPLOAD_BYTES) throw tooLarge("This file is too large for a direct upload.", "too_large");
 
-// GET: Retrieve subfolders, files in the current folder, and breadcrumbs
-export async function GET(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session || !session.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const folderId = parseFolderId(form.get("folderId"));
+  const replaceRaw = form.get("replaceFileId");
+  const replaceFileId = replaceRaw ? parseFolderId(replaceRaw, "replaceFileId") : null;
+  const name = sanitizeFileName(file.name, "upload");
+  const contentType = (file.type || "application/octet-stream").slice(0, 255);
+  const bytes = Buffer.from(await file.arrayBuffer());
+
+  if (replaceFileId) {
+    const existing = await getOwnedFile(user.id, replaceFileId);
+    const used = await getTotalUsed(user.id);
+    if (used - (Number(existing.size) || 0) + bytes.byteLength > DRIVE_QUOTA_BYTES) {
+      throw tooLarge("Storage quota exceeded. Your Swosh Drive limit is 1 GB.", "quota_exceeded");
     }
-    const userId = (session.user as any).id;
-
-    const { searchParams } = new URL(request.url);
-    const folderId = searchParams.get("folderId");
-    const activeFolderId = !folderId || folderId === "root" ? null : folderId;
-
-    // 1. Fetch subfolders in active folder
-    const foldersQuery = supabase
-      .from("folders")
-      .select("*")
-      .eq("owner_id", userId);
-    
-    if (activeFolderId) {
-      foldersQuery.eq("parent_id", activeFolderId);
-    } else {
-      foldersQuery.is("parent_id", null);
-    }
-    
-    const { data: subfolders, error: foldersError } = await foldersQuery.order("name", { ascending: true });
-
-    if (foldersError) {
-      return NextResponse.json({ error: foldersError.message }, { status: 500 });
-    }
-
-    // 2. Fetch files in active folder
-    const filesQuery = supabase
-      .from("files")
-      .select("*")
-      .eq("owner_id", userId);
-
-    if (activeFolderId) {
-      filesQuery.eq("folder_id", activeFolderId);
-    } else {
-      filesQuery.is("folder_id", null);
-    }
-
-    const { data: files, error: filesError } = await filesQuery.order("uploaded_at", { ascending: false });
-
-    if (filesError) {
-      return NextResponse.json({ error: filesError.message }, { status: 500 });
-    }
-
-    // 3. Fetch total storage used across all user files
-    const { data: allFiles, error: totalError } = await supabase
-      .from("files")
-      .select("size")
-      .eq("owner_id", userId);
-
-    if (totalError) {
-      return NextResponse.json({ error: totalError.message }, { status: 500 });
-    }
-
-    const totalUsed = allFiles.reduce((acc, f) => acc + parseInt(f.size), 0);
-
-    // 4. Fetch breadcrumbs
-    const breadcrumbs = await getBreadcrumbs(activeFolderId, userId);
-
-    return NextResponse.json({
-      folders: subfolders || [],
-      files: files || [],
-      totalUsed,
-      breadcrumbs,
-    });
-  } catch (error: any) {
-    console.error("GET drive error:", error);
-    return NextResponse.json({ error: error.message || "Failed to fetch files" }, { status: 500 });
+    // New object first, then row, then delete the old object (inside replaceFileObject).
+    const key = newObjectKey(user.id);
+    await putObject(key, bytes, contentType);
+    const row = await replaceFileObject(user.id, existing, { key, size: bytes.byteLength, name, contentType });
+    const body: UploadCompleteResponse = { file: toFileItem(row), totalUsed: await getTotalUsed(user.id), replaced: true };
+    return NextResponse.json(body);
   }
-}
 
-// POST: Upload a file to R2 under a specific folder after checking quota
-export async function POST(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session || !session.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const userId = (session.user as any).id;
-
-    // Rate Limit: 60 uploads per minute per user (supports multi-file & folder uploads)
-    const rl = checkRateLimit(`drive_upload_${userId}`, 60, 60000);
-    if (!rl.success) {
-      return NextResponse.json({ error: "Rate limit exceeded. Too many file uploads." }, { status: 429 });
-    }
-
-    const formData = await request.formData();
-    const file = formData.get("file") as File | null;
-    const folderId = formData.get("folderId") as string | null;
-    const activeFolderId = !folderId || folderId === "root" ? null : folderId;
-    const replaceFileId = formData.get("replaceFileId") as string | null;
-
-    if (!file) {
-      return NextResponse.json({ error: "No file provided" }, { status: 400 });
-    }
-
-    // 1. Fetch current total storage usage
-    const { data: existingFiles, error: fetchError } = await supabase
-      .from("files")
-      .select("size")
-      .eq("owner_id", userId);
-
-    if (fetchError) {
-      return NextResponse.json({ error: "Failed to verify quota" }, { status: 500 });
-    }
-
-    const totalUsed = existingFiles.reduce((acc, f) => acc + parseInt(f.size), 0);
-
-    // 2. Check quota restriction (1 GB) for new uploads (replacement checks net delta below)
-    if (!replaceFileId && totalUsed + file.size > ONE_GB) {
-      return NextResponse.json(
-        { error: `Storage quota exceeded. Your current limit is 1 GB. Used: ${(totalUsed / 1024 / 1024).toFixed(1)}MB.` },
-        { status: 400 }
-      );
-    }
-
-    // 2b. Handle file replacement if replaceFileId is provided
-    if (replaceFileId) {
-      // Fetch existing file record and verify ownership
-      const { data: existingFile, error: existingError } = await supabase
-        .from("files")
-        .select("*")
-        .eq("id", replaceFileId)
-        .eq("owner_id", userId)
-        .single();
-
-      if (existingError || !existingFile) {
-        return NextResponse.json(
-          { error: "File not found or access denied" },
-          { status: 403 }
-        );
-      }
-
-      // Delete old file from R2 (non-fatal if it fails)
-      try {
-        await deleteFromR2(existingFile.key);
-      } catch (e) {
-        console.error("Failed to delete old R2 object:", e);
-      }
-
-      // Re-check quota with adjusted size (subtract old file, add new file)
-      if (totalUsed - parseInt(existingFile.size) + file.size > ONE_GB) {
-        return NextResponse.json(
-          { error: `Storage quota exceeded. Your current limit is 1 GB. Used: ${(totalUsed / 1024 / 1024).toFixed(1)}MB.` },
-          { status: 400 }
-        );
-      }
-
-      // Upload new file to R2
-      const fileKey = `drives/${userId}/${Date.now()}-${file.name}`;
-      const arrayBuffer = await file.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      await uploadToR2(fileKey, buffer, file.type || "application/octet-stream");
-
-      // Update existing record in Supabase
-      const downloadUrl = `/api/drive/download?key=${encodeURIComponent(fileKey)}`;
-      const { data: updatedFile, error: updateError } = await supabase
-        .from("files")
-        .update({
-          name: file.name,
-          size: file.size,
-          key: fileKey,
-          url: downloadUrl,
-          uploaded_at: new Date().toISOString(),
-        })
-        .eq("id", replaceFileId)
-        .eq("owner_id", userId)
-        .select()
-        .single();
-
-      if (updateError) {
-        return NextResponse.json({ error: "Failed to update file metadata" }, { status: 500 });
-      }
-
-      return NextResponse.json({ success: true, file: updatedFile, replaced: true });
-    }
-
-    // 3. Upload file to Cloudflare R2
-    const fileKey = `drives/${userId}/${Date.now()}-${file.name}`;
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
-    await uploadToR2(fileKey, buffer, file.type || "application/octet-stream");
-
-    // 4. Save metadata to Database
-    const downloadUrl = `/api/drive/download?key=${encodeURIComponent(fileKey)}`;
-    const { data: newFile, error: insertError } = await supabase
-      .from("files")
-      .insert({
-        name: file.name,
-        size: file.size,
-        key: fileKey,
-        url: downloadUrl,
-        owner_id: userId,
-        folder_id: activeFolderId,
-      })
-      .select()
-      .single();
-
-    if (insertError) {
-      return NextResponse.json({ error: "Failed to record file metadata" }, { status: 500 });
-    }
-
-    return NextResponse.json({ success: true, file: newFile });
-  } catch (error: any) {
-    console.error("POST drive error:", error);
-    return NextResponse.json({ error: error.message || "File upload failed" }, { status: 500 });
+  await assertFolderOwned(user.id, folderId);
+  const used = await getTotalUsed(user.id);
+  if (used + bytes.byteLength > DRIVE_QUOTA_BYTES) {
+    throw tooLarge("Storage quota exceeded. Your Swosh Drive limit is 1 GB.", "quota_exceeded");
   }
-}
+  const finalName = await resolveUniqueName(user.id, folderId, name);
+  const row = await storeFile({ userId: user.id, name: finalName, folderId, body: bytes, contentType });
+  const body: UploadCompleteResponse = { file: toFileItem(row), totalUsed: await getTotalUsed(user.id), replaced: false };
+  return NextResponse.json(body);
+});

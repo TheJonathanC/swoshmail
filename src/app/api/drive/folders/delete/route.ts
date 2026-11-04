@@ -1,93 +1,75 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
-import { deleteFromR2 } from "@/lib/r2";
+import { requireUser } from "@/lib/session";
+import { enforceRateLimit, MINUTE } from "@/lib/rate-limit";
+import { check, notFound, readJson, requireUuid, route } from "@/lib/http";
+import { getTotalUsed } from "@/lib/drive";
+import { getFolderTree } from "@/lib/folders";
+import { deleteObjects } from "@/lib/r2";
+import type { FolderDeletePreview, FolderDeleteResponse } from "@/types/api";
 
-// Helper function to recursively collect all files in a folder and its subfolders
-async function getRecursiveFiles(folderId: string, userId: string): Promise<any[]> {
-  let filesList: any[] = [];
+// GET /api/drive/folders/delete?folderId= -> counts for the confirm dialog
+export const GET = route("GET /api/drive/folders/delete", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`drive_folder_preview_${user.id}`, 60, MINUTE);
+  const folderId = requireUuid(new URL(request.url).searchParams.get("folderId"), "folderId");
 
-  // 1. Get direct files
-  const { data: files }: { data: any[] | null } = await supabase
-    .from("files")
-    .select("*")
-    .eq("owner_id", userId)
-    .eq("folder_id", folderId);
+  const tree = await getFolderTree(folderId, user.id);
+  if (!tree) throw notFound("Folder not found.", "folder_not_found");
+  const res: FolderDeletePreview = {
+    files: tree.files.length,
+    // Descendant folders, excluding the folder itself.
+    folders: Math.max(0, tree.folders.length - 1),
+    bytes: tree.files.reduce((sum, f) => sum + f.size, 0),
+  };
+  return NextResponse.json(res, { headers: { "Cache-Control": "no-store" } });
+});
 
-  if (files) {
-    filesList = [...filesList, ...files];
+// POST /api/drive/folders/delete { folderId }
+export const POST = route("POST /api/drive/folders/delete", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`drive_delete_${user.id}`, 60, MINUTE, "Too many delete requests. Please wait a moment.");
+  const body = await readJson<{ folderId: string }>(request);
+  const folderId = requireUuid(body.folderId, "folderId");
+
+  // 1. Collect the whole tree (one RPC) so we know which objects to remove.
+  const tree = await getFolderTree(folderId, user.id);
+  if (!tree) throw notFound("Folder not found.", "folder_not_found");
+
+  // 2. Delete DB rows first. Files are deleted explicitly (RETURNING their keys, so we
+  //    remove exactly what was deleted), then the folder row, which cascades to
+  //    sub-folders and anything uploaded concurrently. If this fails, storage is untouched.
+  const folderIds = tree.folders.map((f) => f.id);
+  const deletedFiles: { key: string }[] = [];
+  for (let i = 0; i < folderIds.length; i += 200) {
+    const rows = check(
+      await supabase
+        .from("files")
+        .delete()
+        .eq("owner_id", user.id)
+        .in("folder_id", folderIds.slice(i, i + 200))
+        .select("key"),
+      "delete folder files"
+    ) as { key: string }[];
+    deletedFiles.push(...(rows ?? []));
   }
+  const deleted = check(
+    await supabase.from("folders").delete().eq("id", folderId).eq("owner_id", user.id).select("id"),
+    "delete folder"
+  ) as { id: string }[];
+  if (!deleted || deleted.length === 0) throw notFound("Folder not found.", "folder_not_found");
 
-  // 2. Get subfolders
-  const { data: subfolders }: { data: any[] | null } = await supabase
-    .from("folders")
-    .select("id")
-    .eq("owner_id", userId)
-    .eq("parent_id", folderId);
+  // 3. Then remove objects in batches. Failures are logged as orphans, not surfaced:
+  //    the files are already gone from the user's drive.
+  const keys = new Set(deletedFiles.map((f) => f.key));
+  for (const f of tree.files) keys.add(f.key); // rows removed by cascade in a race
+  await deleteObjects(Array.from(keys));
 
-  if (subfolders) {
-    for (const sub of subfolders) {
-      const subFiles = await getRecursiveFiles(sub.id, userId);
-      filesList = [...filesList, ...subFiles];
-    }
-  }
-
-  return filesList;
-}
-
-export async function POST(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session || !session.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-    const userId = (session.user as any).id;
-
-    const { folderId } = await request.json();
-
-    if (!folderId) {
-      return NextResponse.json({ error: "Folder ID is required" }, { status: 400 });
-    }
-
-    // 1. Verify folder exists and is owned by the user
-    const { data: folder, error: fetchError } = await supabase
-      .from("folders")
-      .select("*")
-      .eq("id", folderId)
-      .eq("owner_id", userId)
-      .single();
-
-    if (fetchError || !folder) {
-      return NextResponse.json({ error: "Folder not found or access denied" }, { status: 404 });
-    }
-
-    // 2. Get all files in the hierarchy recursively
-    const allFiles = await getRecursiveFiles(folderId, userId);
-
-    // 3. Delete files from Cloudflare R2
-    for (const file of allFiles) {
-      try {
-        await deleteFromR2(file.key);
-      } catch (r2Error) {
-        console.error(`Failed to delete key ${file.key} from R2:`, r2Error);
-      }
-    }
-
-    // 4. Delete the folder from the database (PostgreSQL will cascade delete subfolders and file records)
-    const { error: deleteError } = await supabase
-      .from("folders")
-      .delete()
-      .eq("id", folderId)
-      .eq("owner_id", userId);
-
-    if (deleteError) {
-      return NextResponse.json({ error: deleteError.message }, { status: 500 });
-    }
-
-    return NextResponse.json({ success: true, message: "Folder and all contents successfully deleted" });
-  } catch (error: any) {
-    console.error("Delete folder error:", error);
-    return NextResponse.json({ error: error.message || "Failed to delete folder" }, { status: 500 });
-  }
-}
+  const res: FolderDeleteResponse = {
+    success: true,
+    deletedFiles: deletedFiles.length,
+    deletedFolders: tree.folders.length,
+    totalUsed: await getTotalUsed(user.id),
+  };
+  return NextResponse.json(res);
+});

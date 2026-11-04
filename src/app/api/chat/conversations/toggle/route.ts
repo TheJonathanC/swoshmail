@@ -1,43 +1,31 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
+import { requireUser } from "@/lib/session";
+import { enforceRateLimit, MINUTE } from "@/lib/rate-limit";
+import { badRequest, check, readJson, requireUuid, route } from "@/lib/http";
+import { getConversationForUser, toConversation } from "@/lib/chat";
+import { broadcastEvent, convTopic } from "@/lib/realtime";
+import type { Conversation, RealtimeEvent } from "@/types/api";
 
-export async function POST(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const userId = (session.user as any).id;
+// POST /api/chat/conversations/toggle { conversationId, saveMessages } -> { conversation }
+// Applies to NEW messages only; existing messages keep their own ephemeral flag.
+export const POST = route("POST /api/chat/conversations/toggle", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`chat_toggle_${user.id}`, 20, MINUTE, "Too many changes. Please wait a moment.");
+  const body = await readJson<{ conversationId: string; saveMessages: boolean }>(request);
+  const conversationId = requireUuid(body.conversationId, "conversationId");
+  if (typeof body.saveMessages !== "boolean") throw badRequest("saveMessages must be a boolean.");
 
-    const { conversationId, saveMessages } = await request.json();
-    if (!conversationId || typeof saveMessages !== "boolean") {
-      return NextResponse.json({ error: "Invalid parameters" }, { status: 400 });
-    }
+  const ctx = await getConversationForUser(conversationId, user.id);
+  check(
+    await supabase.from("conversations").update({ save_messages: body.saveMessages }).eq("id", ctx.id),
+    "toggle save_messages"
+  );
 
-    // Verify user is a participant
-    const { data: conv } = await supabase
-      .from("conversations")
-      .select("id")
-      .eq("id", conversationId)
-      .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-      .single();
-
-    if (!conv) {
-      return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
-    }
-
-    // Update the conversation
-    const { error: updateError } = await supabase
-      .from("conversations")
-      .update({ save_messages: saveMessages })
-      .eq("id", conversationId);
-
-    if (updateError) {
-      return NextResponse.json({ error: updateError.message }, { status: 500 });
-    }
-
-    return NextResponse.json({ success: true, save_messages: saveMessages });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 });
-  }
-}
+  await broadcastEvent<Extract<RealtimeEvent, { event: "settings" }>>([convTopic(ctx.id)], "settings", {
+    save_messages: body.saveMessages,
+    changed_by: user.id,
+  });
+  const conversation: Conversation = toConversation({ ...ctx, save_messages: body.saveMessages });
+  return NextResponse.json({ conversation });
+});

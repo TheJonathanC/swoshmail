@@ -1,0 +1,7 @@
+{
+  "name": "minimatch",
+  "version": "11.0.4",
+  "description": "Dev-only shim: minimatch@11.0.4 (patched for GHSA-g3hv-75wg-m249) bundled with its dependencies and exposed through the v3 default-export API that ESLint plugins call. Rebuild with tools/minimatch-compat/README.md.",
+  "main": "index.js",
+  "license": "BlueOak-1.0.0"
+}

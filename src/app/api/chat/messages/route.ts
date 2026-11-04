@@ -1,266 +1,152 @@
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { requireUser } from "@/lib/session";
+import { enforceRateLimit, MINUTE } from "@/lib/rate-limit";
+import { badRequest, check, notFound, readJson, requireUuid, route } from "@/lib/http";
+import {
+  getConversationForUser,
+  MESSAGE_COLUMNS,
+  replySnippet,
+  toChatMessages,
+  type MessageRow,
+} from "@/lib/chat";
+import { decodeMessageContent, encodeMessageContent } from "@/lib/chat-format";
+import { broadcastEvent, convTopic, userTopic } from "@/lib/realtime";
+import { CHAT_HISTORY_LIMIT, CHAT_MAX_MESSAGE_LENGTH } from "@/lib/constants";
+import type { ChatMessage, MessagesResponse, RealtimeEvent, SendMessageResponse } from "@/types/api";
 
-export const dynamic = "force-dynamic";
+type MessageEvent = Extract<RealtimeEvent, { event: "message" }>;
+type EditedEvent = Extract<RealtimeEvent, { event: "message_edited" }>;
+type DeletedEvent = Extract<RealtimeEvent, { event: "message_deleted" }>;
 
-// GET: Fetch persisted messages for a conversation (only if save_messages=true)
-export async function GET(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const userId = (session.user as any).id;
+function validateText(input: unknown): string {
+  if (typeof input !== "string") throw badRequest("Message content is required.");
+  const text = input.trim();
+  if (!text) throw badRequest("Message content is required.");
+  if (text.length > CHAT_MAX_MESSAGE_LENGTH) throw badRequest(`Messages can be at most ${CHAT_MAX_MESSAGE_LENGTH} characters.`);
+  return text;
+}
 
-    // Rate Limit: 60 GET requests per minute per user
-    const rl = checkRateLimit(`chat_get_${userId}`, 60, 60000);
-    if (!rl.success) return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+// GET /api/chat/messages?conversationId= -> { messages } (read-only: never deletes)
+export const GET = route("GET /api/chat/messages", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`chat_get_${user.id}`, 120, MINUTE);
+  const conversationId = requireUuid(new URL(request.url).searchParams.get("conversationId"), "conversationId");
+  const ctx = await getConversationForUser(conversationId, user.id);
 
-    const { searchParams } = new URL(request.url);
-    const conversationId = searchParams.get("conversationId");
-    if (!conversationId) return NextResponse.json({ error: "conversationId required" }, { status: 400 });
-
-    // Verify user is a participant
-    const { data: conv, error: convError } = await supabase
-      .from("conversations")
-      .select("*")
-      .eq("id", conversationId)
-      .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-      .single();
-
-    if (convError || !conv) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
-
-    // Fetch the most recent 100 messages (ordered descending, then reversed for chronological view)
-    const { data: rawMessages, error } = await supabase
+  const rows = check(
+    await supabase
       .from("messages")
-      .select("id, sender_id, content, created_at")
-      .eq("conversation_id", conversationId)
+      .select(MESSAGE_COLUMNS)
+      .eq("conversation_id", ctx.id)
       .order("created_at", { ascending: false })
-      .limit(100);
+      .limit(CHAT_HISTORY_LIMIT * 2),
+    "list messages"
+  ) as MessageRow[];
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  const messages = await toChatMessages((rows ?? []).reverse(), ctx.names);
+  const res: MessagesResponse = { messages };
+  return NextResponse.json(res, { headers: { "Cache-Control": "private, no-store" } });
+});
 
-    const messages = (rawMessages || []).reverse().map((m: any) => {
-      let content = m.content;
-      let replyTo = null;
-      if (typeof m.content === "string" && m.content.startsWith('{"text":')) {
-        try {
-          const parsed = JSON.parse(m.content);
-          if (typeof parsed.text === "string" && parsed.reply_to) {
-            content = parsed.text;
-            replyTo = parsed.reply_to;
-          }
-        } catch {}
-      }
-      return {
-        ...m,
-        content,
-        reply_to: replyTo,
-      };
-    });
+// POST /api/chat/messages { conversationId, content, replyToId?, clientId? } -> { message }
+export const POST = route("POST /api/chat/messages", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`chat_send_${user.id}`, 30, MINUTE, "You are sending messages too fast.");
+  const body = await readJson<{ conversationId: string; content: string; replyToId: string | null; clientId: string }>(request, 64 * 1024);
+  const conversationId = requireUuid(body.conversationId, "conversationId");
+  const text = validateText(body.content);
+  const clientId = typeof body.clientId === "string" ? body.clientId.slice(0, 64) : null;
+  const ctx = await getConversationForUser(conversationId, user.id);
 
-    // Snapchat mechanics: if save_messages is false, delete the messages the user just read
-    if (!conv.save_messages && messages && messages.length > 0) {
-      const readMessageIds = messages
-        .filter((m: { sender_id: string; id: string }) => m.sender_id !== userId)
-        .map((m: { id: string }) => m.id);
-
-      if (readMessageIds.length > 0) {
-        // Delete messages sent by the other user, as the current user has now "seen" them
-        await supabase
-          .from("messages")
-          .delete()
-          .in("id", readMessageIds);
-      }
-    }
-
-    return NextResponse.json(
-      { messages: messages || [] },
-      { headers: { "Cache-Control": "no-store, max-age=0" } }
-    );
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Failed to load messages";
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
-}
-
-// POST: Persist a message to the DB
-export async function POST(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const userId = (session.user as any).id;
-
-    // Rate Limit: 30 messages per minute per user
-    const rl = checkRateLimit(`chat_send_${userId}`, 30, 60000);
-    if (!rl.success) return NextResponse.json({ error: "Rate limit exceeded. You are sending messages too fast." }, { status: 429 });
-
-    const { conversationId, content, replyTo } = await request.json();
-    if (!conversationId || !content?.trim())
-      return NextResponse.json({ error: "conversationId and content are required" }, { status: 400 });
-    
-    if (content.length > 500) {
-      return NextResponse.json({ error: "Message exceeds 500 characters" }, { status: 400 });
-    }
-
-    // Verify participant
-    const { data: conv } = await supabase
-      .from("conversations")
-      .select("save_messages, user1_id, user2_id")
-      .eq("id", conversationId)
-      .or(`user1_id.eq.${userId},user2_id.eq.${userId}`)
-      .single();
-
-    if (!conv) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
-
-    const contentToStore = replyTo && typeof replyTo === "object"
-      ? JSON.stringify({
-          text: content.trim(),
-          reply_to: {
-            id: String(replyTo.id),
-            sender_name: String(replyTo.sender_name || "User"),
-            content: String(replyTo.content || "").slice(0, 150),
-          },
-        })
-      : content.trim();
-
-    const { data: msg, error } = await supabase
-      .from("messages")
-      .insert({ conversation_id: conversationId, sender_id: userId, content: contentToStore })
-      .select()
-      .single();
-
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-    // Auto-prune oldest messages: Keep conversation capped at MAX_STORED_MESSAGES (100)
-    // This prevents database bloat and ensures space is always available for newer messages
-    try {
-      const MAX_STORED_MESSAGES = 100;
-      const { count } = await supabase
+  // Reply quotes are resolved from the DB (same conversation only), never taken from the client.
+  let replyToId: string | null = null;
+  let snapshot: { sender_id: string; content: string } | null = null;
+  if (body.replyToId) {
+    const target = check(
+      await supabase
         .from("messages")
-        .select("id", { count: "exact", head: true })
-        .eq("conversation_id", conversationId);
-
-      if (count && count > MAX_STORED_MESSAGES) {
-        const excess = count - MAX_STORED_MESSAGES;
-        const { data: oldest } = await supabase
-          .from("messages")
-          .select("id")
-          .eq("conversation_id", conversationId)
-          .order("created_at", { ascending: true })
-          .limit(excess);
-
-        if (oldest && oldest.length > 0) {
-          const pruneIds = oldest.map((m: { id: string }) => m.id);
-          await supabase.from("messages").delete().in("id", pruneIds);
-        }
-      }
-    } catch (pruneErr) {
-      console.error("Message auto-pruning error:", pruneErr);
-    }
-
-    return NextResponse.json({
-      success: true,
-      message: {
-        ...msg,
-        content: content.trim(),
-        reply_to: replyTo || null,
-      },
-    });
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Failed to persist message";
-    return NextResponse.json({ error: message }, { status: 500 });
+        .select("id, sender_id, content")
+        .eq("id", requireUuid(body.replyToId, "replyToId"))
+        .eq("conversation_id", ctx.id)
+        .maybeSingle(),
+      "reply target lookup"
+    ) as { id: string; sender_id: string; content: string } | null;
+    if (!target) throw notFound("The message you are replying to no longer exists.", "reply_not_found");
+    replyToId = target.id;
+    snapshot = { sender_id: target.sender_id, content: replySnippet(decodeMessageContent(target.content).text) };
   }
-}
 
-// PATCH: Edit a message
-export async function PATCH(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const userId = (session.user as any).id;
-
-    // Rate Limit: 20 edits per minute per user
-    const rl = checkRateLimit(`chat_edit_${userId}`, 20, 60000);
-    if (!rl.success) return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
-
-    const { messageId, newContent } = await request.json();
-    if (!messageId || !newContent?.trim()) {
-      return NextResponse.json({ error: "messageId and newContent are required" }, { status: 400 });
-    }
-
-    if (newContent.length > 500) {
-      return NextResponse.json({ error: "Message exceeds 500 characters" }, { status: 400 });
-    }
-
-    // Check if the original message had a reply_to attached
-    const { data: existing } = await supabase
+  const row = check(
+    await supabase
       .from("messages")
-      .select("content")
-      .eq("id", messageId)
-      .eq("sender_id", userId)
-      .single();
+      .insert({
+        conversation_id: ctx.id,
+        sender_id: user.id,
+        content: encodeMessageContent(text, replyToId, snapshot),
+        ephemeral: !ctx.save_messages,
+      })
+      .select(MESSAGE_COLUMNS)
+      .single(),
+    "insert message"
+  ) as MessageRow;
+  // History pruning (100 per conversation) is done by a DB trigger.
 
-    let updatedContentToStore = newContent.trim();
-    if (existing?.content && typeof existing.content === "string" && existing.content.startsWith('{"text":')) {
-      try {
-        const parsed = JSON.parse(existing.content);
-        if (parsed.reply_to) {
-          updatedContentToStore = JSON.stringify({
-            text: newContent.trim(),
-            reply_to: parsed.reply_to,
-          });
-        }
-      } catch {}
-    }
+  const [message] = await toChatMessages([row], ctx.names);
+  const payload: ChatMessage = clientId ? { ...message, client_id: clientId } : message;
+  await broadcastEvent<MessageEvent>([convTopic(ctx.id), userTopic(ctx.other.id)], "message", payload);
+  const res: SendMessageResponse = { message: payload };
+  return NextResponse.json(res);
+});
 
-    // Update message, ensuring the user is the sender
-    const { data: msg, error } = await supabase
+// PATCH /api/chat/messages { messageId, content } -> { message } (sender only)
+export const PATCH = route("PATCH /api/chat/messages", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`chat_edit_${user.id}`, 30, MINUTE, "Too many edits. Please wait a moment.");
+  const body = await readJson<{ messageId: string; content: string; newContent: string }>(request, 64 * 1024);
+  const messageId = requireUuid(body.messageId, "messageId");
+  const text = validateText(body.content ?? body.newContent);
+
+  const existing = check(
+    await supabase.from("messages").select(MESSAGE_COLUMNS).eq("id", messageId).eq("sender_id", user.id).maybeSingle(),
+    "load message for edit"
+  ) as MessageRow | null;
+  if (!existing) throw notFound("Message not found.");
+  const ctx = await getConversationForUser(existing.conversation_id, user.id);
+
+  const prev = decodeMessageContent(existing.content);
+  const snapshot = prev.snapshot ?? (prev.legacyReply ? { sender_id: "", content: prev.legacyReply.content } : null);
+  const updated = check(
+    await supabase
       .from("messages")
-      .update({ content: updatedContentToStore })
+      .update({ content: encodeMessageContent(text, prev.replyToId, snapshot), edited_at: new Date().toISOString() })
       .eq("id", messageId)
-      .eq("sender_id", userId) // Security: only sender can edit
-      .select()
-      .single();
+      .eq("sender_id", user.id)
+      .select(MESSAGE_COLUMNS)
+      .maybeSingle(),
+    "edit message"
+  ) as MessageRow | null;
+  if (!updated) throw notFound("Message not found.");
 
-    if (error || !msg) return NextResponse.json({ error: "Failed to edit message. It may not exist or you don't own it." }, { status: 403 });
+  const [message] = await toChatMessages([updated], ctx.names);
+  await broadcastEvent<EditedEvent>([convTopic(ctx.id)], "message_edited", message);
+  return NextResponse.json({ message });
+});
 
-    return NextResponse.json({
-      success: true,
-      message: {
-        ...msg,
-        content: newContent.trim(),
-      },
-    });
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Failed to edit message";
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
-}
+// DELETE /api/chat/messages { messageId } (also ?messageId=) -> { success: true } (sender only)
+export const DELETE = route("DELETE /api/chat/messages", async (request: Request) => {
+  const user = await requireUser();
+  await enforceRateLimit(`chat_delete_${user.id}`, 30, MINUTE, "Too many deletions. Please wait a moment.");
+  let rawId: unknown = new URL(request.url).searchParams.get("messageId");
+  if (!rawId) rawId = (await readJson<{ messageId: string }>(request)).messageId;
+  const messageId = requireUuid(rawId, "messageId");
 
-// DELETE: Delete a message
-export async function DELETE(request: Request) {
-  try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    const userId = (session.user as any).id;
+  const rows = check(
+    await supabase.from("messages").delete().eq("id", messageId).eq("sender_id", user.id).select("id, conversation_id"),
+    "delete message"
+  ) as { id: string; conversation_id: string }[];
+  if (!rows || rows.length === 0) throw notFound("Message not found.");
 
-    const { searchParams } = new URL(request.url);
-    const messageId = searchParams.get("messageId");
-    if (!messageId) return NextResponse.json({ error: "messageId required" }, { status: 400 });
-
-    const { error } = await supabase
-      .from("messages")
-      .delete()
-      .eq("id", messageId)
-      .eq("sender_id", userId);
-
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-    return NextResponse.json({ success: true });
-  } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "Failed to delete message";
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
-}
+  await broadcastEvent<DeletedEvent>([convTopic(rows[0].conversation_id)], "message_deleted", { id: messageId });
+  return NextResponse.json({ success: true as const });
+});

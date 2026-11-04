@@ -1,57 +1,41 @@
-import { scryptSync, randomBytes, timingSafeEqual, createHmac } from "crypto";
+import { scrypt as scryptCb, randomBytes, timingSafeEqual, type BinaryLike, type ScryptOptions } from "crypto";
 
-/**
- * Hashes a plaintext password using PBKDF2/scrypt algorithm
- */
-export function hashPassword(password: string): string {
-  const salt = randomBytes(16).toString("hex");
-  const hash = scryptSync(password, salt, 64).toString("hex");
-  return `${salt}:${hash}`;
+const KEY_LENGTH = 64;
+
+function scrypt(password: BinaryLike, salt: BinaryLike, keylen: number, options: ScryptOptions = {}): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scryptCb(password, salt, keylen, options, (err, key) => (err ? reject(err) : resolve(key)));
+  });
 }
 
-/**
- * Verifies a password against a stored hash
- */
-export function verifyPassword(password: string, storedHash: string): boolean {
+/** Hashes a password with scrypt and a random salt: "<saltHex>:<hashHex>". Async (does not block the event loop). */
+export async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(16).toString("hex");
+  const hash = await scrypt(password, salt, KEY_LENGTH);
+  return `${salt}:${hash.toString("hex")}`;
+}
+
+/** Constant-time verification against a "<salt>:<hash>" string. */
+export async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
   try {
     const [salt, hash] = storedHash.split(":");
-    if (!salt || !hash) return false;
-    const checkHash = scryptSync(password, salt, 64).toString("hex");
-    return timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(checkHash, "hex"));
+    if (!salt || !hash || !/^[0-9a-f]+$/i.test(hash)) return false;
+    const expected = Buffer.from(hash, "hex");
+    if (expected.length !== KEY_LENGTH) return false;
+    const actual = await scrypt(password, salt, KEY_LENGTH);
+    return timingSafeEqual(expected, actual);
   } catch (err) {
     console.error("Password verification error:", err);
     return false;
   }
 }
 
-const SHARE_SECRET = process.env.NEXTAUTH_SECRET || "swosh_drive_share_key_default";
-
 /**
- * Generates a signed tamper-proof share token for a file
+ * A valid-format hash of a random password, used to spend the same scrypt time for
+ * unknown usernames so response timing does not reveal which usernames exist.
  */
-export function generateShareToken(fileId: string, ownerId: string): string {
-  const payload = Buffer.from(JSON.stringify({ f: fileId, o: ownerId, t: Date.now() })).toString("base64url");
-  const signature = createHmac("sha256", SHARE_SECRET).update(payload).digest("base64url");
-  return `${payload}.${signature}`;
+let dummyHash: Promise<string> | null = null;
+export function getDummyHash(): Promise<string> {
+  if (!dummyHash) dummyHash = hashPassword(randomBytes(16).toString("hex"));
+  return dummyHash;
 }
-
-/**
- * Verifies a share token signature and decodes payload
- */
-export function verifyShareToken(token: string): { fileId: string; ownerId: string } | null {
-  try {
-    const [payload, signature] = token.split(".");
-    if (!payload || !signature) return null;
-    const expectedSignature = createHmac("sha256", SHARE_SECRET).update(payload).digest("base64url");
-    if (signature.length !== expectedSignature.length) return null;
-    if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
-      return null;
-    }
-    const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf-8"));
-    if (!data.f || !data.o) return null;
-    return { fileId: data.f, ownerId: data.o };
-  } catch {
-    return null;
-  }
-}
-

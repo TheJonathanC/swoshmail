@@ -1,891 +1,231 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
-import { createClient } from "@supabase/supabase-js";
-import { MessageIcon, SendIcon, TrashIcon, EditIcon, ChevronLeftIcon, CloseIcon, ReplyIcon } from "./Icons";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { ChatMessage, Conversation, ConversationListItem } from "@/types/api";
+import { MessageIcon, RefreshCwIcon } from "./Icons";
+import { fetchConversations, isAbortError } from "@/hooks/chat/api";
+import { useDocumentVisible, useRealtimeClient, useUserChannel } from "@/hooks/chat/useRealtime";
+import { usePartnerPresence, usePresenceHeartbeat } from "@/hooks/chat/usePresence";
+import { collectNewIncoming, seedSeenIds } from "@/hooks/chat/unread";
+import ConversationList, { conversationButtonId } from "./chat/ConversationList";
+import ConversationView from "./chat/ConversationView";
+import NewChatForm from "./chat/NewChatForm";
 
-// Supabase public client for Realtime (uses anon key, guarded against missing env vars)
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const CONVERSATIONS_POLL_MS = 20_000;
 
-const supabaseRealtime = (supabaseUrl && supabaseAnonKey)
-  ? createClient(supabaseUrl, supabaseAnonKey)
-  : null;
-
-interface Conversation {
-  id: string;
-  save_messages: boolean;
-  other_user: { id: string; username: string };
-}
-
-export interface ReplyTo {
-  id: string;
-  sender_name: string;
-  content: string;
-}
-
-interface Message {
-  id: string;
-  sender_id: string;
-  content: string;
-  created_at: string;
-  local?: boolean; // true for session-only messages not persisted
-  reply_to?: ReplyTo | null;
-}
-
-interface ChatPanelProps {
+export interface ChatPanelProps {
   userId: string;
   username: string;
+  /** Chat tab is currently shown. The panel stays mounted while hidden. */
+  active?: boolean;
+  /** Total unread messages across all conversations (for the nav badge / tab title). */
+  onUnreadChange?: (total: number) => void;
 }
 
-export default function ChatPanel({ userId, username }: ChatPanelProps) {
+/**
+ * Swosh Chat entry point (loaded with next/dynamic from page.tsx).
+ * Owns the conversation list, unread counts, realtime client, presence and the
+ * user-level channel. Each open conversation is a keyed <ConversationView>.
+ *
+ * Unread counting: every incoming message id is counted at most once (`countedRef`),
+ * whichever path sees it first: the user channel (realtime), the open conversation's
+ * loads, or, while live updates are down, `recent_incoming_ids` from the polled
+ * conversation list. Ids present on the first list load are seeded as already seen.
+ */
+export default function ChatPanel({ userId, username, active = true, onUnreadChange }: ChatPanelProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConv, setActiveConv] = useState<Conversation | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [replyingTo, setReplyingTo] = useState<ReplyTo | null>(null);
-  const [messageToDelete, setMessageToDelete] = useState<string | null>(null);
-  const [activeActionMessageId, setActiveActionMessageId] = useState<string | null>(null);
-  const [newChatUsername, setNewChatUsername] = useState("");
-  const [newChatError, setNewChatError] = useState("");
-  const [isStartingChat, setIsStartingChat] = useState(false);
-  const [isSending, setIsSending] = useState(false);
-  const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [convLoad, setConvLoad] = useState<"loading" | "error" | "ready">("loading");
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [unread, setUnread] = useState<Record<string, number>>({});
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const chatInputRef = useRef<HTMLInputElement>(null);
-  const channelRef = useRef<any>(null);
-  const presenceChannelRef = useRef<any>(null);
+  const visible = useDocumentVisible();
+  const viewing = active && visible;
+  const viewedId = viewing ? activeId : null;
 
-  // Dismiss reply, edit, or active actions on Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (replyingTo) setReplyingTo(null);
-        if (editingMessageId) {
-          setEditingMessageId(null);
-          setInput("");
-        }
-        if (activeActionMessageId) setActiveActionMessageId(null);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [replyingTo, editingMessageId, activeActionMessageId]);
+  const rt = useRealtimeClient();
+  const presence = usePartnerPresence();
+  usePresenceHeartbeat(userId, presence.setSkew);
 
-  // Declare fetchConversations before useEffect (satisfies React Compiler / linter)
-  const fetchConversations = useCallback(async () => {
-    try {
-      const res = await fetch("/api/chat/conversations");
-      if (res.ok) {
-        const data = await res.json();
-        setConversations(data.conversations || []);
-      }
-    } catch (err) {
-      console.error("Failed to load conversations:", err);
+  const activeConv = activeId ? (conversations.find((c) => c.id === activeId) ?? null) : null;
+
+  // ---------------------------------------------------------------- conversations
+  /** Incoming message ids already counted (or seeded as pre-existing). Shared by every path. */
+  const countedRef = useRef<Set<string>>(new Set());
+  const seededRef = useRef(false);
+  /** Mirrors of render values for the list callback (kept stable for its callers). */
+  const pollingRef = useRef(false);
+  const viewedIdRef = useRef<string | null>(null);
+
+  /** Polling-mode unread counting from `recent_incoming_ids`. */
+  const countFromList = useCallback((list: readonly ConversationListItem[]) => {
+    if (!seededRef.current) {
+      seededRef.current = true;
+      seedSeenIds(list, countedRef.current);
+      return;
     }
+    // Realtime mode: the user channel counts; leave unseen ids for a later polling pass.
+    if (!pollingRef.current) return;
+    const added = collectNewIncoming(list, countedRef.current, viewedIdRef.current);
+    if (Object.keys(added).length === 0) return;
+    setUnread((prev) => {
+      const next = { ...prev };
+      for (const [id, n] of Object.entries(added)) next[id] = (next[id] ?? 0) + n;
+      return next;
+    });
   }, []);
 
-  // Scroll to bottom whenever messages change
+  const applyPresenceList = presence.applyList;
+  // Request-id guard: only the newest request may update the list.
+  const convSeqRef = useRef(0);
+  const loadConversations = useCallback((signal?: AbortSignal): Promise<void> => {
+    const seq = ++convSeqRef.current;
+    return fetchConversations(signal).then(
+      (list) => {
+        if (seq !== convSeqRef.current) return;
+        setConversations(list);
+        setConvLoad("ready");
+        applyPresenceList(list);
+        countFromList(list);
+      },
+      (err: unknown) => {
+        if (isAbortError(err) || seq !== convSeqRef.current) return;
+        setConvLoad((prev) => (prev === "ready" ? prev : "error"));
+      }
+    );
+  }, [applyPresenceList, countFromList]);
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    const ctrl = new AbortController();
+    void loadConversations(ctrl.signal);
+    return () => ctrl.abort();
+  }, [loadConversations]);
 
-  // Handle document visibility to clear unread count
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (!document.hidden) {
-        setUnreadCount(0);
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, []);
-
-  // Update document title if unread count changes while hidden
-  useEffect(() => {
-    if (unreadCount > 0) {
-      document.title = `(${unreadCount}) Swosh Chat`;
-    }
-  }, [unreadCount]);
-
-  // Join global presence channel to track who's online
-  useEffect(() => {
-    if (!supabaseRealtime) return;
-
-    const presenceCh = supabaseRealtime.channel("swoshchat:presence", {
-      config: { presence: { key: userId } },
-    });
-
-    presenceCh
-      .on("presence", { event: "sync" }, () => {
-        const state = presenceCh.presenceState();
-        const online = new Set(Object.keys(state));
-        setOnlineUsers(online);
-      })
-      .subscribe(async (status) => {
-        if (status === "SUBSCRIBED") {
-          await presenceCh.track({ username });
-        }
-      });
-
-    presenceChannelRef.current = presenceCh;
-    return () => {
-      if (supabaseRealtime) {
-        supabaseRealtime.removeChannel(presenceCh);
-      }
-    };
-  }, [userId, username]);
-
-  // Fetch conversations on mount
-  useEffect(() => {
-    let active = true;
-    fetch("/api/chat/conversations")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (active && data) {
-          setConversations(data.conversations || []);
-        }
-      })
-      .catch((err) => console.error("Failed to load conversations:", err));
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  // Subscribe to a conversation's Realtime channel
-  const subscribeToConversation = useCallback((conv: Conversation) => {
-    if (!supabaseRealtime) return;
-
-    if (channelRef.current) {
-      supabaseRealtime.removeChannel(channelRef.current);
-    }
-
-    const ch = supabaseRealtime.channel(`swoshchat:conv:${conv.id}`);
-
-    ch.on("broadcast", { event: "settings" }, ({ payload }: { payload: { save_messages?: boolean } }) => {
-      if (payload.save_messages !== undefined) {
-        setConversations((prev) =>
-          prev.map((c) => (c.id === conv.id ? { ...c, save_messages: payload.save_messages! } : c))
-        );
-        setActiveConv((prev) =>
-          prev && prev.id === conv.id ? { ...prev, save_messages: payload.save_messages! } : prev
-        );
-      }
-    });
-
-    ch.on("broadcast", { event: "message" }, ({ payload }: { payload: Message }) => {
-      const incoming: Message = payload;
-      
-      // If document is hidden, increment unread count for the title notification
-      if (document.hidden && incoming.sender_id !== userId) {
-        setUnreadCount((prev) => prev + 1);
-      }
-
-      setMessages((prev) => {
-        if (prev.some((m) => m.id === incoming.id)) return prev;
-        return [...prev, incoming];
-      });
-
-      // Auto-pong if the sender is the other user and message is "ping"
-      if (
-        incoming.sender_id !== userId &&
-        incoming.content.trim().toLowerCase() === "ping"
-      ) {
-        const pongLocalId = `pong-${Date.now()}`;
-        const pong: Message = {
-          id: pongLocalId,
-          sender_id: userId,
-          content: "pong",
-          created_at: new Date().toISOString(),
-          local: !conv.save_messages,
-        };
-        setMessages((prev) => [...prev, pong]);
-        ch.send({ type: "broadcast", event: "message", payload: pong });
-
-        fetch("/api/chat/messages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ conversationId: conv.id, content: "pong" }),
-        })
-          .then((res) => res.json())
-          .then((data) => {
-            if (data.message?.id) {
-              setMessages((prev) =>
-                prev.map((m) => (m.id === pongLocalId ? { ...data.message, local: m.local } : m))
-              );
-              ch.send({
-                type: "broadcast",
-                event: "sync_id",
-                payload: { tempId: pongLocalId, realId: data.message.id },
-              });
-            }
-          })
-          .catch((err) => console.error("Auto-pong persist failed:", err));
-      }
-    });
-
-    // Synchronize temporary local message IDs with confirmed database UUIDs
-    ch.on("broadcast", { event: "sync_id" }, ({ payload }: { payload: { tempId: string; realId: string } }) => {
-      if (payload.tempId && payload.realId) {
-        setMessages((prev) =>
-          prev.map((m) => (m.id === payload.tempId ? { ...m, id: payload.realId } : m))
-        );
-      }
-    });
-
-    ch.on("broadcast", { event: "edit_message" }, ({ payload }: { payload: { id: string; content: string } }) => {
-      setMessages((prev) =>
-        prev.map((m) => (m.id === payload.id ? { ...m, content: payload.content } : m))
-      );
-    });
-
-    ch.on("broadcast", { event: "delete_message" }, ({ payload }: { payload: { id: string } }) => {
-      setMessages((prev) => prev.filter((m) => m.id !== payload.id));
-    });
-
-    ch.subscribe();
-    channelRef.current = ch;
-  }, [userId]);
-
-  // Load a conversation
-  const openConversation = async (conv: Conversation) => {
-    setActiveConv(conv);
-    setMessages([]);
-    setReplyingTo(null);
-    setEditingMessageId(null);
-    setActiveActionMessageId(null);
-    setInput("");
-    subscribeToConversation(conv);
-
-    try {
-      const res = await fetch(`/api/chat/messages?conversationId=${conv.id}`, { cache: "no-store" });
-      if (res.ok) {
-        const data = await res.json();
-        setMessages(data.messages || []);
-      }
-    } catch (err) {
-      console.error("Failed to fetch messages:", err);
-    }
+  const retryConversations = () => {
+    setConvLoad("loading");
+    void loadConversations();
   };
 
-  // Start a new chat
-  const handleStartChat = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newChatUsername.trim()) return;
-    setIsStartingChat(true);
-    setNewChatError("");
+  const addConversation = useCallback(
+    (conv: Conversation) => {
+      setConversations((prev) => (prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]));
+      applyPresenceList([conv]);
+    },
+    [applyPresenceList]
+  );
 
-    try {
-      const res = await fetch("/api/chat/conversations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: newChatUsername.trim(), saveMessages: false }),
-      });
-
-      const data = await res.json();
-      setIsStartingChat(false);
-
-      if (!res.ok) {
-        setNewChatError(data.error || "User not found");
-        return;
-      }
-
-      const conv = data.conversation;
-      setConversations((prev) =>
-        prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]
-      );
-      setNewChatUsername("");
-      openConversation(conv);
-    } catch {
-      setIsStartingChat(false);
-      setNewChatError("Unable to connect to server.");
-    }
-  };
-
-  // Toggle chat settings with optimistic update and rollback
-  const handleToggleSave = async () => {
-    if (!activeConv) return;
-    const prevSaveState = activeConv.save_messages;
-    const newSaveState = !prevSaveState;
-    
-    setActiveConv({ ...activeConv, save_messages: newSaveState });
+  const setSaveMessages = useCallback((conversationId: string, saveMessages: boolean) => {
     setConversations((prev) =>
-      prev.map((c) => (c.id === activeConv.id ? { ...c, save_messages: newSaveState } : c))
+      prev.map((c) => (c.id === conversationId && c.save_messages !== saveMessages ? { ...c, save_messages: saveMessages } : c))
     );
+  }, []);
 
-    try {
-      const res = await fetch("/api/chat/conversations/toggle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId: activeConv.id, saveMessages: newSaveState }),
-      });
-
-      if (!res.ok) {
-        throw new Error("Failed to toggle setting on server");
-      }
-
-      if (channelRef.current) {
-        channelRef.current.send({
-          type: "broadcast",
-          event: "settings",
-          payload: { save_messages: newSaveState },
-        });
-      }
-    } catch (err) {
-      console.error("Failed to toggle settings, rolling back", err);
-      setActiveConv((prev) => (prev ? { ...prev, save_messages: prevSaveState } : prev));
-      setConversations((prev) =>
-        prev.map((c) => (c.id === activeConv.id ? { ...c, save_messages: prevSaveState } : c))
-      );
-    }
+  // ---------------------------------------------------------------- unread
+  const noteIncoming = (m: ChatMessage) => {
+    if (m.sender_id === userId || countedRef.current.has(m.id)) return;
+    countedRef.current.add(m.id);
+    if (!conversations.some((c) => c.id === m.conversation_id)) void loadConversations();
+    if (m.conversation_id === viewedId) return; // on screen right now
+    setUnread((prev) => ({ ...prev, [m.conversation_id]: (prev[m.conversation_id] ?? 0) + 1 }));
   };
 
-  // Send or Edit a message
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || !activeConv || isSending) return;
+  const userStatus = useUserChannel(rt.client, userId, {
+    onMessage: noteIncoming,
+    onConversation: addConversation,
+    onPresence: presence.applyEvent,
+  });
 
-    const content = input.trim();
-    setInput("");
-    setIsSending(true);
+  // Clear a conversation's badge as soon as it is actually being viewed.
+  const [clearedFor, setClearedFor] = useState<string | null>(null);
+  if (viewedId !== clearedFor) {
+    setClearedFor(viewedId);
+    if (viewedId && unread[viewedId]) setUnread((prev) => ({ ...prev, [viewedId]: 0 }));
+  }
 
-    if (editingMessageId) {
-      const targetId = editingMessageId;
-      setEditingMessageId(null);
+  const totalUnread = Object.entries(unread).reduce((sum, [id, n]) => (id === viewedId ? sum : sum + n), 0);
+  useEffect(() => {
+    onUnreadChange?.(totalUnread);
+  }, [totalUnread, onUnreadChange]);
 
-      // Optimistic edit
-      setMessages((prev) => prev.map((m) => (m.id === targetId ? { ...m, content } : m)));
-      
-      const payload = { id: targetId, content };
-      await channelRef.current?.send({ type: "broadcast", event: "edit_message", payload });
+  // ---------------------------------------------------------------- fallback polling
+  const liveDown = rt.state === "unavailable" || (rt.client !== null && userStatus === "failed");
 
-      if (!targetId.startsWith("local-") && !targetId.startsWith("pong-")) {
-        try {
-          await fetch("/api/chat/messages", {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ messageId: targetId, newContent: content }),
-          });
-        } catch (err) {
-          console.error("Failed to persist edit:", err);
-        }
-      }
-    } else {
-      const localId = `local-${Date.now()}`;
-      const activeReply = replyingTo;
-      setReplyingTo(null);
+  useEffect(() => {
+    pollingRef.current = liveDown;
+    viewedIdRef.current = viewedId;
+  }, [liveDown, viewedId]);
 
-      const msg: Message = {
-        id: localId,
-        sender_id: userId,
-        content,
-        created_at: new Date().toISOString(),
-        local: !activeConv.save_messages,
-        reply_to: activeReply,
-      };
+  useEffect(() => {
+    if (!liveDown) return;
+    const timer = setInterval(() => void loadConversations(), CONVERSATIONS_POLL_MS);
+    return () => clearInterval(timer);
+  }, [liveDown, loadConversations]);
 
-      setMessages((prev) => [...prev, msg]);
-      await channelRef.current?.send({ type: "broadcast", event: "message", payload: msg });
-
-      try {
-        const res = await fetch("/api/chat/messages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ conversationId: activeConv.id, content, replyTo: activeReply }),
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          if (data.message?.id) {
-            // Replace local temporary ID with database ID
-            setMessages((prev) =>
-              prev.map((m) => (m.id === localId ? { ...data.message, local: m.local } : m))
-            );
-            // Broadcast the confirmed ID to peer
-            channelRef.current?.send({
-              type: "broadcast",
-              event: "sync_id",
-              payload: { tempId: localId, realId: data.message.id },
-            });
-          }
-        }
-      } catch (err) {
-        console.error("Failed to persist message:", err);
-      }
-    }
-
-    setIsSending(false);
+  // ---------------------------------------------------------------- navigation
+  const openConversation = (conv: Conversation) => {
+    setActiveId(conv.id);
+    setUnread((prev) => (prev[conv.id] ? { ...prev, [conv.id]: 0 } : prev));
   };
 
-  const handleReplyClick = (msg: Message) => {
-    setActiveActionMessageId(null);
-    setEditingMessageId(null);
-    const senderName = msg.sender_id === userId ? "You" : (activeConv?.other_user.username || "User");
-    setReplyingTo({
-      id: msg.id,
-      sender_name: senderName,
-      content: msg.content,
-    });
-    chatInputRef.current?.focus();
+  const handleCreated = (conv: Conversation) => {
+    addConversation(conv);
+    openConversation(conv);
   };
 
-  const handleScrollToMessage = (targetId: string) => {
-    const el = document.getElementById(`chat-msg-${targetId}`);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-      el.classList.add("chat-bubble-highlight");
-      setTimeout(() => {
-        el.classList.remove("chat-bubble-highlight");
-      }, 1600);
-    }
+  const handleBack = () => {
+    const id = activeId;
+    setActiveId(null);
+    // Return focus to the conversation we came from (mobile list/detail).
+    if (id) requestAnimationFrame(() => document.getElementById(conversationButtonId(id))?.focus());
   };
-
-  const handleEditClick = (msg: Message) => {
-    setActiveActionMessageId(null);
-    setReplyingTo(null);
-    setEditingMessageId(msg.id);
-    setInput(msg.content);
-    chatInputRef.current?.focus();
-  };
-
-  const confirmDeleteMessage = async () => {
-    if (!messageToDelete) return;
-    const msgId = messageToDelete;
-    setMessageToDelete(null);
-    setActiveActionMessageId(null);
-    
-    // Optimistic delete
-    setMessages((prev) => prev.filter((m) => m.id !== msgId));
-    await channelRef.current?.send({ type: "broadcast", event: "delete_message", payload: { id: msgId } });
-
-    if (!msgId.startsWith("local-") && !msgId.startsWith("pong-")) {
-      try {
-        await fetch(`/api/chat/messages?messageId=${msgId}`, { method: "DELETE" });
-      } catch (err) {
-        console.error("Failed to delete message from DB:", err);
-      }
-    }
-  };
-
-  const isOnline = (uid: string) => onlineUsers.has(uid);
-
-  const isSameDay = (d1: string, d2: string) => {
-    const date1 = new Date(d1);
-    const date2 = new Date(d2);
-    return (
-      date1.getFullYear() === date2.getFullYear() &&
-      date1.getMonth() === date2.getMonth() &&
-      date1.getDate() === date2.getDate()
-    );
-  };
-
-  const formatDateDivider = (iso: string) => {
-    const date = new Date(iso);
-    const today = new Date();
-    const yesterday = new Date();
-    yesterday.setDate(today.getDate() - 1);
-
-    if (isSameDay(iso, today.toISOString())) {
-      return "Today";
-    }
-    if (isSameDay(iso, yesterday.toISOString())) {
-      return "Yesterday";
-    }
-    return date.toLocaleDateString(undefined, {
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-      year: date.getFullYear() !== today.getFullYear() ? "numeric" : undefined,
-    });
-  };
-
-  const formatMessageTime = (iso: string) =>
-    new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
-  const formatMessageDateBadge = (iso: string) => {
-    const today = new Date();
-    if (isSameDay(iso, today.toISOString())) {
-      return "";
-    }
-    const yesterday = new Date();
-    yesterday.setDate(today.getDate() - 1);
-    if (isSameDay(iso, yesterday.toISOString())) {
-      return "Yesterday";
-    }
-    const date = new Date(iso);
-    return date.toLocaleDateString([], {
-      month: "short",
-      day: "numeric",
-    });
-  };
-
-  const formatFullDateTime = (iso: string) => {
-    const date = new Date(iso);
-    return date.toLocaleString(undefined, {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
-
 
   return (
     <div className={`chat-layout ${activeConv ? "chat-active" : "chat-list-view"}`}>
-      {/* Left: Conversation List */}
-      <div className="chat-sidebar">
-        {/* New chat form */}
-        <form onSubmit={handleStartChat} className="chat-new-form">
-          <label className="form-label" style={{ display: "block", marginBottom: "8px" }}>New Chat</label>
-          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            <input
-              className="form-input new-chat-input"
-              placeholder="Username..."
-              value={newChatUsername}
-              onChange={(e) => { setNewChatUsername(e.target.value); setNewChatError(""); }}
-              autoComplete="off"
-            />
-            <button
-              type="submit"
-              className="btn-primary new-chat-btn"
-              disabled={isStartingChat}
-              aria-label="Start chat"
-            >
-              {isStartingChat ? <div className="spinner" style={{ width: "14px", height: "14px" }} /> : "→"}
-            </button>
-          </div>
-          {newChatError && <p className="error-text" style={{ marginTop: "6px", fontSize: "11px" }}>{newChatError}</p>}
-        </form>
-
-        {/* Conversations list */}
-        <div className="chat-conversations-list">
-          {conversations.length === 0 ? (
-            <p style={{ fontSize: "12px", color: "var(--text-muted)", textAlign: "center", padding: "20px 0" }}>
-              No conversations yet.
-            </p>
-          ) : (
-            conversations.map((conv) => (
-              <button
-                key={conv.id}
-                onClick={() => openConversation(conv)}
-                className={`chat-conv-item ${activeConv?.id === conv.id ? "active" : ""}`}
-              >
-                {/* Online indicator dot */}
-                <div className={`online-dot ${isOnline(conv.other_user.id) ? "active" : ""}`} />
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: "13px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {conv.other_user.username}
-                  </div>
-                  <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "2px" }}>
-                    {conv.save_messages ? "● History Kept" : "○ Disappearing"}
-                  </div>
-                </div>
-              </button>
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* Right: Chat window */}
-      <div className="chat-window">
-        {!activeConv ? (
-          <div className="empty-state" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: "12px" }}>
-            <div style={{ color: "var(--text-muted)", opacity: 0.5 }}><MessageIcon size={48} /></div>
-            <p style={{ fontSize: "15px", fontWeight: 600 }}>Select or start a conversation</p>
-            <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>Type a username on the left to begin chatting.</p>
-          </div>
-        ) : (
-          <>
-            {/* Chat header */}
-            <div className="chat-header-bar">
-              {/* Mobile Back Button */}
-              <button
-                type="button"
-                className="chat-back-btn"
-                onClick={() => {
-                  setActiveConv(null);
-                  setActiveActionMessageId(null);
-                }}
-                title="Back to conversations"
-                aria-label="Back to conversations"
-              >
-                <ChevronLeftIcon size={20} />
-              </button>
-
-              <div className="chat-header-user-info">
-                <div className={`online-dot ${isOnline(activeConv.other_user.id) ? "active" : ""}`} style={{ width: "10px", height: "10px" }} />
-                <div className="chat-header-names">
-                  <span className="chat-header-username" title={activeConv.other_user.username}>
-                    {activeConv.other_user.username}
-                  </span>
-                  <span className="chat-header-status">
-                    {isOnline(activeConv.other_user.id) ? "Online" : "Offline"}
-                  </span>
-                </div>
-              </div>
-              
-              <div className="toggle-switch-wrapper">
-                <span className="toggle-label toggle-label-desktop">Keep History</span>
-                <span className="toggle-label toggle-label-mobile">History</span>
-                <button
-                  type="button"
-                  className={`toggle-switch ${activeConv.save_messages ? "active" : ""}`}
-                  onClick={handleToggleSave}
-                  title={activeConv.save_messages ? "Messages are saved" : "Disappearing mode enabled"}
-                  aria-label="Toggle Disappearing Messages"
-                />
-              </div>
-            </div>
-
-            {/* Messages */}
-            <div className="chat-messages-container" onClick={() => setActiveActionMessageId(null)}>
-              {messages.length === 0 && (
-                <div style={{ textAlign: "center", marginTop: "auto", marginBottom: "auto", padding: "20px" }}>
-                  <p style={{ color: "var(--text-muted)", fontSize: "13px", marginBottom: "8px" }}>
-                    No messages yet. Say hello — or try sending <code style={{ background: "rgba(255,255,255,0.05)", padding: "2px 6px", borderRadius: "4px" }}>ping</code>!
-                  </p>
-                  {!activeConv.save_messages && (
-                    <p style={{ color: "var(--text-muted)", fontSize: "11px", opacity: 0.7 }}>
-                      ℹ️ Disappearing Mode is ON. Messages will vanish after they are read.
-                    </p>
-                  )}
-                </div>
-              )}
-              {messages.map((msg, index) => {
-                const isMine = msg.sender_id === userId;
-                const isPing = msg.content.toLowerCase() === "ping";
-                const isPong = msg.content.toLowerCase() === "pong";
-                const isActionActive = activeActionMessageId === msg.id;
-                const showDateDivider =
-                  index === 0 || !isSameDay(msg.created_at, messages[index - 1].created_at);
-                const dateBadge = formatMessageDateBadge(msg.created_at);
-
-                return (
-                  <React.Fragment key={msg.id}>
-                    {showDateDivider && (
-                      <div className="chat-date-separator">
-                        <span className="chat-date-pill">
-                          {formatDateDivider(msg.created_at)}
-                        </span>
-                      </div>
-                    )}
-                    <div className={`chat-message-row ${isMine ? "mine" : "other"}`}>
-                      <div
-                        id={`chat-msg-${msg.id}`}
-                        className={`chat-bubble ${isMine ? "mine" : "other"} chat-bubble-interactive`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setActiveActionMessageId((prev) => (prev === msg.id ? null : msg.id));
-                        }}
-                        title="Tap for options"
-                      >
-                        {msg.reply_to && (
-                          <div
-                            className="chat-reply-quote"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleScrollToMessage(msg.reply_to!.id);
-                            }}
-                            title={`Jump to message from ${msg.reply_to.sender_name}`}
-                          >
-                            <div className="chat-reply-quote-sender">
-                              <ReplyIcon size={11} /> {msg.reply_to.sender_name}
-                            </div>
-                            <div className="chat-reply-quote-text">
-                              {msg.reply_to.content}
-                            </div>
-                          </div>
-                        )}
-                        {isPing ? (
-                          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ color: "var(--primary)", fontSize: "10px" }}>●</span> ping</span>
-                        ) : isPong ? (
-                          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}><span style={{ color: "var(--success)", fontSize: "10px" }}>●</span> pong</span>
-                        ) : (
-                          msg.content
-                        )}
-                        <div
-                          className="chat-bubble-timestamp"
-                          title={formatFullDateTime(msg.created_at)}
-                        >
-                          {dateBadge && (
-                            <span className="chat-timestamp-date">
-                              {dateBadge} &bull;{" "}
-                            </span>
-                          )}
-                          <span>{formatMessageTime(msg.created_at)}</span>
-                        </div>
-                      </div>
-                      <div className={`message-actions ${isActionActive ? "show-actions" : ""}`}>
-                        <button
-                          type="button"
-                          className="action-icon-btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleReplyClick(msg);
-                          }}
-                          title="Reply to message"
-                          aria-label="Reply to message"
-                        >
-                          <ReplyIcon size={14} />
-                        </button>
-                        {isMine && (
-                          <>
-                            <button
-                              type="button"
-                              className="action-icon-btn"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleEditClick(msg);
-                              }}
-                              title="Edit Message"
-                              aria-label="Edit Message"
-                            >
-                              <EditIcon size={14} />
-                            </button>
-                            <button
-                              type="button"
-                              className="action-icon-btn danger"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setMessageToDelete(msg.id);
-                                setActiveActionMessageId(null);
-                              }}
-                              title="Delete Message"
-                              aria-label="Delete Message"
-                            >
-                              <TrashIcon size={14} />
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </React.Fragment>
-                );
-              })}
-
-              <div ref={messagesEndRef} />
-            </div>
-
-            {/* Editing banner */}
-            {editingMessageId && (
-              <div className="chat-editing-banner">
-                <div className="editing-banner-content">
-                  <EditIcon size={14} />
-                  <span>Editing message</span>
-                </div>
-                <button
-                  type="button"
-                  className="editing-cancel-btn"
-                  onClick={() => {
-                    setEditingMessageId(null);
-                    setInput("");
-                  }}
-                  aria-label="Cancel editing"
-                  title="Cancel editing (Esc)"
-                >
-                  <CloseIcon size={14} /> Cancel
-                </button>
-              </div>
-            )}
-
-            {/* Replying banner */}
-            {replyingTo && (
-              <div className="chat-reply-banner">
-                <div className="reply-banner-content">
-                  <div className="reply-banner-header">
-                    <ReplyIcon size={13} />
-                    <span>Replying to {replyingTo.sender_name}</span>
-                  </div>
-                  <div className="reply-banner-text">
-                    {replyingTo.content}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="editing-cancel-btn"
-                  onClick={() => setReplyingTo(null)}
-                  aria-label="Cancel reply"
-                  title="Cancel reply (Esc)"
-                >
-                  <CloseIcon size={14} /> Cancel
-                </button>
-              </div>
-            )}
-
-            {/* Message input */}
-            <form onSubmit={handleSend} className="chat-input-bar">
-              <div className="chat-input-wrapper">
-                <input
-                  ref={chatInputRef}
-                  className="form-input chat-input-field"
-                  placeholder={
-                    replyingTo
-                      ? `Reply to ${replyingTo.sender_name}...`
-                      : `Message ${activeConv.other_user.username}...`
-                  }
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  maxLength={500}
-                  autoComplete="off"
-                />
-                {input.length >= 350 && (
-                  <div className="chat-char-counter" style={{ color: input.length >= 480 ? "var(--danger)" : "var(--text-muted)" }}>
-                    {input.length}/500
-                  </div>
-                )}
-              </div>
-              <button
-                type="submit"
-                className="btn-primary chat-send-btn"
-                disabled={!input.trim() || isSending}
-                aria-label="Send message"
-              >
-                {isSending ? <div className="spinner" style={{ width: "16px", height: "16px" }} /> : <SendIcon size={18} />}
-              </button>
-            </form>
-          </>
+      <aside className="chat-sidebar" aria-label="Chats">
+        <NewChatForm onCreated={handleCreated} />
+        {liveDown && (
+          <p className="chat-live-note" role="status">
+            <RefreshCwIcon size={12} />
+            <span>Live updates unavailable — refreshing periodically</span>
+          </p>
         )}
-      </div>
+        <ConversationList
+          conversations={conversations}
+          load={convLoad}
+          onRetry={retryConversations}
+          activeId={activeId}
+          unread={unread}
+          online={presence.online}
+          presenceKnown={presence.known}
+          onOpen={openConversation}
+        />
+      </aside>
 
-      {/* Custom Delete Message Modal */}
-      {messageToDelete && (
-        <div className="modal-overlay" onClick={() => setMessageToDelete(null)}>
-          <div className="modal-content glass-panel" style={{ maxWidth: "400px" }} onClick={(e) => e.stopPropagation()}>
-            <header className="modal-header">
-              <h3 className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--danger)" }}>
-                <TrashIcon size={18} /> Delete Message
-              </h3>
-            </header>
-            <div className="modal-body" style={{ padding: "20px" }}>
-              <p style={{ fontSize: "14px", lineHeight: 1.5, color: "var(--text-muted)" }}>
-                Are you sure you want to delete this message? This action cannot be undone.
-              </p>
-            </div>
-            <footer className="modal-footer" style={{ borderTop: "1px solid rgba(255, 255, 255, 0.05)", paddingTop: "15px" }}>
-              <button
-                className="btn-secondary"
-                style={{ padding: "10px 16px" }}
-                onClick={() => setMessageToDelete(null)}
-              >
-                Cancel
-              </button>
-              <button
-                className="btn-primary"
-                style={{ background: "var(--danger)", padding: "10px 16px", width: "auto" }}
-                onClick={confirmDeleteMessage}
-              >
-                Delete
-              </button>
-            </footer>
+      <section className="chat-window" aria-label={activeConv ? `Chat with ${activeConv.other_user.username}` : "Chat"}>
+        {activeConv ? (
+          <ConversationView
+            key={activeConv.id}
+            conversation={activeConv}
+            userId={userId}
+            username={username}
+            client={rt.client}
+            realtimeState={rt.state}
+            active={active}
+            viewing={viewing}
+            online={presence.online.has(activeConv.other_user.id)}
+            presenceKnown={presence.known}
+            panelLiveNote={liveDown}
+            onBack={handleBack}
+            onSaveMessagesChange={setSaveMessages}
+            onIncoming={noteIncoming}
+          />
+        ) : (
+          <div className="chat-empty-window">
+            <MessageIcon size={40} />
+            <p className="chat-empty-title">Select or start a conversation</p>
+            <p className="chat-empty-hint">Enter a username under &ldquo;Start a new chat&rdquo; to begin.</p>
           </div>
-        </div>
-      )}
+        )}
+      </section>
     </div>
   );
 }
