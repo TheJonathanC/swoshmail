@@ -2,6 +2,7 @@
 
 import { useId, useState, type FormEvent } from "react";
 import type { Conversation } from "@/types/api";
+import { ClockIcon, HistoryIcon } from "@/components/Icons";
 import { ChatApiError, createConversation, describeError } from "@/hooks/chat/api";
 
 interface NewChatFormProps {
@@ -41,7 +42,7 @@ export default function NewChatForm({ onCreated }: NewChatFormProps) {
   return (
     <form onSubmit={handleSubmit} className="chat-new-form" noValidate>
       <label htmlFor={inputId} className="form-label chat-new-label">
-        Start a new chat
+        New chat
       </label>
       <div className="chat-new-row">
         <input
@@ -66,16 +67,21 @@ export default function NewChatForm({ onCreated }: NewChatFormProps) {
 
       <fieldset className="chat-mode-choice">
         <legend className="sr-only">Message mode for the new chat</legend>
-        <label className={`chat-mode-option${!keepHistory ? " selected" : ""}`}>
+        <label
+          className={`chat-mode-option${!keepHistory ? " selected" : ""}`}
+          title="Messages are deleted after the other person reads them"
+        >
           <input type="radio" name={`${inputId}-mode`} checked={!keepHistory} onChange={() => setKeepHistory(false)} />
-          Disappearing <span className="chat-mode-default">(default)</span>
+          <ClockIcon size={13} />
+          Disappearing
         </label>
-        <label className={`chat-mode-option${keepHistory ? " selected" : ""}`}>
+        <label className={`chat-mode-option${keepHistory ? " selected" : ""}`} title="The latest 100 messages are saved">
           <input type="radio" name={`${inputId}-mode`} checked={keepHistory} onChange={() => setKeepHistory(true)} />
+          <HistoryIcon size={13} />
           Keep history
         </label>
       </fieldset>
-      <p id={hintId} className="chat-mode-hint">
+      <p id={hintId} className="sr-only">
         {keepHistory
           ? "The latest 100 messages are saved."
           : "Messages are deleted after the other person reads them."}

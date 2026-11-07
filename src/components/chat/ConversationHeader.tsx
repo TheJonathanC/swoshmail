@@ -2,7 +2,7 @@
 
 import { useId } from "react";
 import type { Conversation } from "@/types/api";
-import { ChevronLeftIcon, ClockIcon, HistoryIcon, RefreshCwIcon } from "@/components/Icons";
+import { ChevronLeftIcon } from "@/components/Icons";
 
 interface ConversationHeaderProps {
   conversation: Conversation;
@@ -11,8 +11,6 @@ interface ConversationHeaderProps {
   toggleBusy: boolean;
   onToggleHistory: () => void;
   onBack: () => void;
-  /** Show the polling note here (only when the panel-level note isn't already shown). */
-  showLiveNote: boolean;
 }
 
 export default function ConversationHeader({
@@ -22,7 +20,6 @@ export default function ConversationHeader({
   toggleBusy,
   onToggleHistory,
   onBack,
-  showLiveNote,
 }: ConversationHeaderProps) {
   const switchId = useId();
   const name = conversation.other_user.username;
@@ -45,7 +42,10 @@ export default function ConversationHeader({
           </div>
         </div>
 
-        <div className="toggle-switch-wrapper">
+        <div
+          className="toggle-switch-wrapper"
+          title={keep ? "The latest 100 messages are saved" : `Messages are deleted after ${name} reads them`}
+        >
           <label htmlFor={switchId} className="toggle-label">
             Keep history
           </label>
@@ -61,22 +61,6 @@ export default function ConversationHeader({
           />
         </div>
       </div>
-
-      <p className={`chat-mode-banner ${keep ? "is-keep" : "is-disappearing"}`}>
-        {keep ? <HistoryIcon size={14} /> : <ClockIcon size={14} />}
-        <span>
-          {keep
-            ? "Keep history: messages are saved. Only the latest 100 messages in this chat are kept."
-            : `Disappearing messages: messages are deleted after ${name} reads them.`}
-        </span>
-      </p>
-
-      {showLiveNote && (
-        <p className="chat-live-note" role="status">
-          <RefreshCwIcon size={12} />
-          <span>Live updates unavailable — refreshing periodically</span>
-        </p>
-      )}
     </div>
   );
 }

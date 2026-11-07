@@ -25,8 +25,6 @@ interface ConversationViewProps {
   viewing: boolean;
   online: boolean;
   presenceKnown: boolean;
-  /** The panel already shows the "live updates unavailable" note. */
-  panelLiveNote: boolean;
   onBack: () => void;
   onSaveMessagesChange: (conversationId: string, saveMessages: boolean) => void;
   onIncoming: (message: ChatMessage) => void;
@@ -43,7 +41,6 @@ export default function ConversationView({
   viewing,
   online,
   presenceKnown,
-  panelLiveNote,
   onBack,
   onSaveMessagesChange,
   onIncoming,
@@ -164,7 +161,6 @@ export default function ConversationView({
         toggleBusy={toggleBusy}
         onToggleHistory={handleToggleHistory}
         onBack={onBack}
-        showLiveNote={chat.polling && !panelLiveNote}
       />
 
       <MessageList

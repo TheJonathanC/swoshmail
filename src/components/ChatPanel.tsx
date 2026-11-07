@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatMessage, Conversation, ConversationListItem } from "@/types/api";
-import { MessageIcon, RefreshCwIcon } from "./Icons";
+import { MessageIcon } from "./Icons";
 import { fetchConversations, isAbortError } from "@/hooks/chat/api";
 import { useDocumentVisible, useRealtimeClient, useUserChannel } from "@/hooks/chat/useRealtime";
 import { usePartnerPresence, usePresenceHeartbeat } from "@/hooks/chat/usePresence";
@@ -182,12 +182,6 @@ export default function ChatPanel({ userId, username, active = true, onUnreadCha
     <div className={`chat-layout ${activeConv ? "chat-active" : "chat-list-view"}`}>
       <aside className="chat-sidebar" aria-label="Chats">
         <NewChatForm onCreated={handleCreated} />
-        {liveDown && (
-          <p className="chat-live-note" role="status">
-            <RefreshCwIcon size={12} />
-            <span>Live updates unavailable — refreshing periodically</span>
-          </p>
-        )}
         <ConversationList
           conversations={conversations}
           load={convLoad}
@@ -213,7 +207,6 @@ export default function ChatPanel({ userId, username, active = true, onUnreadCha
             viewing={viewing}
             online={presence.online.has(activeConv.other_user.id)}
             presenceKnown={presence.known}
-            panelLiveNote={liveDown}
             onBack={handleBack}
             onSaveMessagesChange={setSaveMessages}
             onIncoming={noteIncoming}
