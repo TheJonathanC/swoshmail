@@ -2613,6 +2613,8 @@ p.quota-warning {
 }
 
 .chat-conversations-nav {
+  /* Containing block for .sr-only text, or it escapes the scroller and scrolls .main-content */
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -2890,6 +2892,8 @@ p.quota-warning {
 }
 
 .chat-messages-container {
+  /* Containing block for .sr-only text, or it escapes the scroller and scrolls .main-content */
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
